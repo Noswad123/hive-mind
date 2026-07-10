@@ -1,0 +1,7 @@
+target/
+.git/
+hive-pwa/node_modules/
+hive-pwa/dist/
+legacy/
+.env
+*.log
