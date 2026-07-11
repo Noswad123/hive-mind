@@ -51,8 +51,8 @@
 
   const DEFAULT_ENDPOINT =
     import.meta.env.VITE_HIVE_SYNC_API_URL ||
-    'https://hive-sync-api-wr23e5lyna-ue.a.run.app'
-  const DEFAULT_DEVICE_ID = 'personal'
+    'http://127.0.0.1:8080'
+  const DEFAULT_DEVICE_ID = 'phone'
 
   let endpoint = DEFAULT_ENDPOINT
   let deviceID = DEFAULT_DEVICE_ID

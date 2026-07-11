@@ -28,8 +28,14 @@ have been enqueued and pushed from the desktop.
 
 ```bash
 mw notes sync
-mw sync --until-empty --outbox-limit 250
-mw sync doctor --skip-remote
+hive sync run \
+  --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token-from-keychain \
+  --until-empty \
+  --outbox-limit 250
+hive sync local-doctor --db-path /path/to/notes.db
 ```
 
 Then open the PWA and tap **Sync now** from the top status strip.
@@ -37,6 +43,11 @@ Then open the PWA and tap **Sync now** from the top status strip.
 ## Local development
 
 ```bash
+cargo run -p hive -- serve \
+  --addr 127.0.0.1:8080 \
+  --device-tokens desktop=desktop-token,phone=phone-token \
+  --permissive-cors
+
 cd hive-pwa
 npm install
 npm run check
@@ -63,16 +74,27 @@ Copy `.env.example` to `.env` and set values as needed.
 
 `VITE_HIVE_SYNC_API_URL` is used as the default API endpoint.
 
-If `.env` is omitted, the app currently falls back to the deployed Cloud Run endpoint:
+If `.env` is omitted, the app currently falls back to local Rust `hive serve`:
 
-`https://hive-sync-api-wr23e5lyna-ue.a.run.app`
+`http://127.0.0.1:8080`
 
 ## Important note
 
 Browser access to sync API requires CORS support in `hive-sync-api`.
 
-If the PWA is opened from `http://<lan-ip>:5173`, that exact origin must be present in
-`HIVE_SYNC_CORS_ALLOWED_ORIGINS` on the Cloud Run deployment.
+For local Rust development, start `hive serve` with `--permissive-cors`. If the
+PWA is opened from `http://<lan-ip>:5173`, use an API endpoint reachable from the
+phone, usually `http://<your-machine-lan-ip>:8080` rather than `127.0.0.1`.
+
+Pulled phone-originated notes are staged on desktop by `hive sync run`; export
+them for manual Markdown review with:
+
+```bash
+hive sync notes review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/remote-note-inbox \
+  --mark-reviewed
+```
 
 For mobile setup, smoke-test steps, and known limitations, see
 `/Users/jdawson/Projects/hive-mind/docs/hive-sync-mobile-onboarding.md`.

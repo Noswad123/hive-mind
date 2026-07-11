@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 
 PROJECT_ID="hive-mind-492419"
-DEVICE_ID="personal"
+DEVICE_ID="desktop"
+NOTES_DB_PATH="${NOTES_DB_PATH:-/path/to/notes.db}"
+HIVE_SYNC_API_URL="${HIVE_SYNC_API_URL:-http://127.0.0.1:8080}"
 
-mw sync \
-  --endpoint "https://hive-sync-api-wr23e5lyna-ue.a.run.app" \
+hive sync run \
+  --endpoint "$HIVE_SYNC_API_URL" \
+  --db-path "$NOTES_DB_PATH" \
   --device-id "$DEVICE_ID" \
   --token-from-keychain \
   --until-empty \

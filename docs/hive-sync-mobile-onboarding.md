@@ -1,8 +1,8 @@
 # Hive Sync Mobile Onboarding
 
-> Status: parked legacy Hive Sync notes. The Rust `mw` CLI no longer supports
-> top-level `mw sync`; local notes use `mw notes sync` / `mw seal`. Revisit these
-> commands only if Hive Sync returns under the future `hive` command boundary.
+> Status: active Hive PWA onboarding notes for the standalone `hive-mind`
+> project. Rust `hive` owns the sync/API boundary; Rust `mw` remains local
+> Markdown-first.
 
 This document covers mobile setup, install checks, and current limitations for the Hive Mind PWA.
 
@@ -19,8 +19,9 @@ Use this guide to:
 - Deployed or locally reachable `hive-sync-api`
 - Valid device bearer token
 - Device ID mapped to that token
-- PWA built and served from `apps/hive-pwa`
-- Browser access allowed by `HIVE_SYNC_CORS_ALLOWED_ORIGINS`
+- PWA built and served from `hive-pwa/`
+- Browser access allowed by Rust `hive serve --permissive-cors` for local dev, or
+  by deployment CORS settings for cloud dev
 
 ## Quick recovery checklist
 
@@ -35,11 +36,27 @@ For your cloud deployment, collect:
 
 - **PWA URL**: where the browser loads the Svelte app, usually `http://localhost:5173` or
   `http://<lan-ip>:5173`
-- **API endpoint**: the Cloud Run `hive-sync-api` URL entered into the app settings
+- **API endpoint**: the `hive-sync-api` URL entered into the app settings. For
+  local desktop browser testing this is often `http://127.0.0.1:8080`; for a
+  phone on the same LAN, use `http://<lan-ip>:8080`.
 
 Do not put the Vite dev-server URL into the app's **Endpoint** field.
 
-### 2) Resolve the current Cloud Run endpoint
+### 2) Start or resolve the API endpoint
+
+For local Rust API testing:
+
+```bash
+cargo run -p hive -- serve \
+  --addr 0.0.0.0:8080 \
+  --device-tokens desktop=desktop-token,phone=phone-token \
+  --permissive-cors
+```
+
+Use `http://127.0.0.1:8080` from a desktop browser, or `http://<lan-ip>:8080`
+from a phone on the same network.
+
+For Cloud Run, resolve the current endpoint:
 
 ```bash
 gcloud run services describe hive-sync-api \
@@ -72,7 +89,7 @@ PHONE_TOKEN="$(gcloud secrets versions access latest \
   --secret hive-sync-api-device-tokens \
   --project "$PROJECT_ID" | tr ',' '\n' | awk -F= '$1=="phone"{print $2}')"
 
-mw sync token check \
+hive sync token check \
   --endpoint "https://<service-url>" \
   --device-id "phone" \
   --token "$PHONE_TOKEN"
@@ -80,8 +97,9 @@ mw sync token check \
 
 ### 5) Fix CORS for phone/LAN testing
 
-If the phone opens the PWA from `http://<lan-ip>:5173`, that exact origin must be allowed by
-the API deployment.
+If the phone opens the PWA from `http://<lan-ip>:5173`, that exact origin must be
+allowed by the API deployment. Local Rust `hive serve --permissive-cors` allows
+browser/PWA development origins.
 
 Example for a LAN IP of `<lan-ip>`:
 
@@ -99,7 +117,7 @@ inline to the deploy command as shown above.
 ### 6) Start the PWA
 
 ```bash
-cd apps/hive-pwa
+cd hive-pwa
 npm install
 npm run dev
 ```
@@ -107,6 +125,7 @@ npm run dev
 Open the printed **Network** URL on the phone, then in the app enter:
 
 - endpoint = Cloud Run URL
+  - or `http://<lan-ip>:8080` for local Rust `hive serve`
 - device ID = `phone`
 - token = phone token value
 
@@ -125,13 +144,19 @@ If the cloud database does not have every desktop note yet, run this from the de
 mw notes sync
 
 # Push all currently pending outbox operations without waiting between batches.
-mw sync --until-empty --outbox-limit 250
+hive sync run \
+  --endpoint "https://<service-url>" \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token-from-keychain \
+  --until-empty \
+  --outbox-limit 250
 
 # Confirm there are no pending local outbox operations left.
-mw sync doctor --skip-remote
+hive sync local-doctor --db-path /path/to/notes.db
 ```
 
-If `mw sync doctor --skip-remote` still reports pending outbox operations, fix the reported sync
+If `hive sync local-doctor` still reports pending outbox operations, fix the reported sync
 error before using the PWA as the anywhere-notes browser.
 
 ### Inside the phone PWA
@@ -159,22 +184,32 @@ After a healthy sync, you should usually expect:
 - sync status text to mention pushed/pulled counts
 - local and remote cursor values to advance
 
-### On desktop after `mw sync`
+### On desktop after `hive sync run`
 
 If you run desktop sync after a phone sync, the current expectation is:
 
 - sync cursors may advance
 - pulled todo operations are applied into local `sync_todos`
-- pulled note operations are applied into the local note DB
-- your normal markdown files may show **no visible change yet**
+- pulled note operations are staged into `sync_note_imports`
+- your normal markdown files will show **no visible change yet** until you export
+  and manually import reviewed inbox files
 
-This is expected for the current Phase 2 slice. The phone-to-server-to-desktop path proves sync transport
-and local persistence, but it does **not yet** provide a file-materialization workflow back into the
-canonical markdown workspace.
+Export staged phone-originated notes for manual review:
+
+```bash
+hive sync notes review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/remote-note-inbox \
+  --mark-reviewed
+```
+
+This is expected for the current slice. The phone-to-server-to-desktop path proves
+sync transport and local persistence, while canonical Markdown writeback remains
+manual/reviewed.
 
 ## Setup
 
-1. run npm run dev in apps/hive-pwa
+1. run `npm run dev` in `hive-pwa/`
 2. Open the PWA in the mobile browser.
 3. Enter:
    - endpoint
@@ -186,7 +221,39 @@ canonical markdown workspace.
 
 ## Install smoke test checklist
 
-Status in this repo session: **procedure documented, physical device execution pending**.
+Status in this repo session: **desktop automated PWA/API checks pass; physical
+device execution requires a phone/browser outside this terminal session**.
+
+### Automated local Rust API smoke
+
+From the `hive-mind` repo root:
+
+```bash
+# Terminal 1: API reachable by desktop browser.
+cargo run -p hive -- serve \
+  --addr 127.0.0.1:8080 \
+  --device-tokens phone=phone-token,desktop=desktop-token \
+  --permissive-cors
+
+# Terminal 2: PWA checks/build.
+cargo run -p hive -- pwa check
+cargo run -p hive -- pwa build
+
+# Token and API checks used by the PWA UI.
+cargo run -p hive -- sync token check \
+  --endpoint http://127.0.0.1:8080 \
+  --device-id phone \
+  --token phone-token
+cargo run -p hive -- sync doctor \
+  --endpoint http://127.0.0.1:8080 \
+  --device-id phone \
+  --token phone-token
+```
+
+Then run `cargo run -p hive -- pwa dev`, open `http://localhost:5173` in a
+desktop browser, use endpoint `http://127.0.0.1:8080`, device ID `phone`, token
+`phone-token`, then tap **Validate Token**, **Check Sync State**, and **Manual
+Sync**.
 
 ### iOS Safari
 
@@ -230,8 +297,8 @@ Status in this repo session: **procedure documented, physical device execution p
 - Todo editing/filtering is improved but still focused on baseline payload compatibility rather than full task-management depth.
 - Conflict visibility exists in the PWA, but deep review/export remains a desktop CLI workflow.
 - Connectivity health is browser-derived and should be treated as advisory.
-- Desktop `mw sync` may successfully ingest phone-originated note/todo operations without producing
-  obvious markdown file changes in the normal notes tree.
+- Desktop `hive sync run` stages phone-originated note operations without
+  automatically changing canonical Markdown files.
 
 ## Deferred follow-up
 

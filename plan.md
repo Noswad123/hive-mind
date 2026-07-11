@@ -51,7 +51,8 @@ Current Rust API service capabilities, ported from the Go oracle:
   - `POST /v1/devices/register`
 - Storage backends:
   - in-memory store for local/dev usage
-  - Postgres store remains to be reintroduced
+  - SQLite store for durable local/dev persistence
+  - Postgres/Cloud SQL store remains to be evaluated for cloud deployment
 - Device bearer-token auth middleware.
 - CORS/preflight support for browser/PWA clients.
 - Conflict behavior:
@@ -75,9 +76,19 @@ Current desktop sync client capabilities:
 - Rust `hive sync run` persists local cursor in `sync_state`.
 - Rust `hive sync run` tracks entity versions in `sync_entity_versions`.
 - Rust `hive sync run` applies pulled todo operations into `sync_todos`.
-- Pulled note operations are intentionally not materialized into Markdown yet.
-- Remaining Go-oracle behavior includes transient retry/backoff, bounded worker
-  mode, conflict artifacts/review, and richer token/keychain workflows.
+- Rust `hive sync run` stages pulled note operations into `sync_note_imports`.
+- Rust `hive sync notes review` lists staged note imports, exports generated
+  Markdown inbox files, and can mark reviewed imports reviewed.
+- Pulled note operations are intentionally not written directly to canonical
+  Markdown.
+- Rust `hive sync conflicts review` exports local conflict review snapshots,
+  writes per-conflict artifacts, and can mark reviewed conflicts resolved.
+- Rust `hive` supports explicit/env bearer tokens, `--token-command`, macOS
+  Keychain token read/store, and `hive sync token check`.
+- Rust `hive sync run` supports transient retry/backoff, bounded worker
+  iterations/intervals, `--until-empty`, and aggregate worker output.
+- Remaining Go-oracle behavior includes richer observability/cursor-lag reporting
+  and reviewed Markdown materialization.
 - Observability counters include:
   - pushed accepted/rejected
   - pulled applied
@@ -100,7 +111,8 @@ Current PWA capabilities:
 
 - Svelte + Vite app shell.
 - Web app manifest and service worker registration baseline.
-- Endpoint/device/token setup UI.
+- Endpoint/device/token setup UI with local Rust `hive serve` as the default dev
+  endpoint.
 - Token/device validation against the sync API.
 - IndexedDB persistence for:
   - settings/config
@@ -137,6 +149,8 @@ Current PWA capabilities:
   - search/filter
   - selected item detail panes
   - editable todo section/done/meta fields
+- Automated validation against Rust `hive serve` passes; physical-device smoke
+  evidence remains manual/pending.
 
 ## Current sync model
 
@@ -152,9 +166,9 @@ Current PWA capabilities:
 ## Known limitations
 
 - Rust `mw` does not yet implement full HTTP push/pull sync.
-- Phone-originated operations can sync into desktop-side local sync persistence,
-  but should not yet be expected to create obvious Markdown file changes in the
-  main notes workspace.
+- Phone-originated notes can sync into desktop-side staging and generated review
+  inbox files, but should not be expected to overwrite Markdown files in the main
+  notes workspace automatically.
 - Physical-device PWA smoke tests still require manual execution and evidence
   capture.
 - The PWA is useful as a companion capture/review app, not yet a complete mobile

@@ -1,8 +1,8 @@
 # Hive Sync Monitoring & Alerts
 
-> Status: parked legacy Hive Sync notes. The Rust `mw` CLI no longer supports
-> top-level `mw sync`; local notes use `mw notes sync` / `mw seal`. Revisit these
-> commands only if Hive Sync returns under the future `hive` command boundary.
+> Status: active Rust `hive` monitoring notes for Cloud Run. These checks verify
+> API reachability and request health; they do not imply durable persistence when
+> `HIVE_STORE=memory` is used.
 
 This guide configures basic production monitoring for `hive-sync-api` on Cloud Run.
 
@@ -44,12 +44,12 @@ gcloud monitoring uptime list-configs --project "$PROJECT_ID"
 gcloud monitoring policies list --project "$PROJECT_ID"
 ```
 
-## 3) Operate with `mw sync doctor`
+## 3) Operate with `hive sync doctor`
 
 For local and remote sync health checks:
 
 ```bash
-mw sync doctor \
+hive sync doctor \
   --endpoint "https://<service-url>" \
   --device-id "desktop" \
   --token-from-keychain
@@ -64,12 +64,15 @@ Requirements:
 - Both computers use same `--endpoint`
 - Each computer has unique `--device-id`
 - Each computer has valid bearer token for that device
-- Each computer runs periodic `mw sync`
+- Each computer runs periodic `hive sync run`
+- The server uses a real durable backend. The current Rust cloud deployment is
+  `memory` by default, so two-computer production sync is not durable until a
+  cloud persistence backend is selected/implemented.
 
 Example cadence (every 5 minutes) on each machine:
 
 ```bash
-*/5 * * * * /path/to/mw sync --endpoint "https://<service-url>" --device-id "desktop" --token-from-keychain >> /tmp/mw-sync.log 2>&1
+*/5 * * * * /path/to/hive sync run --endpoint "https://<service-url>" --db-path /path/to/notes.db --device-id "desktop" --token-from-keychain >> /tmp/hive-sync.log 2>&1
 ```
 
 Eventual consistency notes:

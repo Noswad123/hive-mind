@@ -14,8 +14,12 @@ Basic Rust client checks:
 ```bash
 hive sync doctor --endpoint http://127.0.0.1:8080 --token token
 hive sync register --endpoint http://127.0.0.1:8080 --device-id desktop --token token
+hive sync token check --endpoint http://127.0.0.1:8080 --device-id desktop --token token
 hive sync pull --endpoint http://127.0.0.1:8080 --token token --cursor 0
 ```
+
+Desktop note safety: pulled `note` operations are staged locally for review via
+`hive sync notes review`; they are not written directly to canonical Markdown.
 
 ## Endpoints
 
@@ -35,6 +39,10 @@ Authorization: Bearer <device-token>
 
 The authenticated token's device id must match request `device_id` when a request
 body includes one.
+
+Rust `hive` sync client commands can resolve this bearer token from an explicit
+`--token`, `HIVE_SYNC_TOKEN`, `--token-command`, or macOS Keychain via
+`--token-from-keychain`. Keychain storage is managed with `hive sync token store`.
 
 ## Operation shape
 

@@ -25,12 +25,16 @@ crates/hive-desktop
   Desktop bridge for MindWeaver-compatible SQLite sync tables: reads pending
   `sync_outbox`, pushes operations, records ack/reject/conflict state, pulls by
   cursor, persists `sync_state`, updates `sync_entity_versions`, and applies
-  pulled todo operations into `sync_todos`.
+  pulled todo operations into `sync_todos`. Pulled note operations are staged in
+  `sync_note_imports` and optionally exported as generated inbox files for manual
+  Markdown review. Also owns local conflict review, export, artifact writing, and
+  mark-resolved workflows.
 
 crates/hive-server
-  Rust sync API server. The initial backend is an in-memory store ported from the
-  legacy Go behavior: push/pull cursors, device token auth, stale base-version
-  conflict detection, LWW conflict resolution, and CORS support for PWA dev.
+  Rust sync API server. Backends include in-memory and SQLite. Behavior is ported
+  from the legacy Go API: push/pull cursors, device token auth, stale
+  base-version conflict detection, LWW conflict resolution, and CORS support for
+  PWA dev.
 
 hive-pwa
   Svelte/Vite PWA.
@@ -51,7 +55,10 @@ hive sync push-file --endpoint http://127.0.0.1:8080 --token token --file push-r
 hive sync pull --endpoint http://127.0.0.1:8080 --token token --cursor 0
 hive sync local-doctor --db-path /path/to/notes.db
 hive sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token
+hive sync notes review --db-path /path/to/notes.db --export-dir .local/remote-note-inbox --mark-reviewed
+hive sync conflicts review --db-path /path/to/notes.db --export-dir .local/conflict-reviews --artifacts-dir .local/conflicts
 hive serve --addr 127.0.0.1:8080 --device-tokens desktop=token --permissive-cors
+hive serve --addr 127.0.0.1:8080 --store sqlite --sqlite-path .local/hive-sync.db --device-tokens desktop=token --permissive-cors
 hive pwa check
 hive pwa build
 hive pwa dev
@@ -65,10 +72,11 @@ hive pwa preview
 3. Continue porting desktop sync client behavior into `hive`:
    - done: list/push pending outbox operations from MindWeaver's local SQLite DB
    - done: pull remote operations by cursor
-   - done: persist cursor and entity versions
-   - done: apply pulled todo operations into `sync_todos`
-   - remaining: conflict artifact files and review workflow
-4. Decide remote-to-Markdown materialization before applying mobile-originated
-   changes directly to canonical notes.
-5. Add a persistent server backend after the in-memory Rust API is validated
-   against the PWA and legacy Go oracle.
+    - done: persist cursor and entity versions
+    - done: apply pulled todo operations into `sync_todos`
+    - done: conflict artifact files and review workflow
+    - done: stage pulled note operations and export generated review inbox files
+ 4. Keep automatic canonical Markdown writeback disabled until the reviewed import
+    UX is proven safe in daily use.
+5. Remaining server hardening: evaluate whether Cloud deployment should use
+   SQLite with a mounted volume or a future Postgres/Cloud SQL backend.

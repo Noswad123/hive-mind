@@ -30,8 +30,15 @@ The Rust CLI starts with operational glue rather than a full sync rewrite:
 - `hive sync pull --endpoint <url> --cursor 0` pulls operations.
 - `hive sync local-doctor --db-path <notes.db>` inspects local sync tables.
 - `hive sync run --db-path <notes.db> --endpoint <url> --device-id <id>` runs
-  one desktop sync cycle.
-- `hive serve` runs the Rust `hive-sync-api` replacement.
+  one desktop sync cycle, or a bounded worker with retry/interval flags.
+- `hive sync token check|store` validates bearer/device mappings and manages
+  macOS Keychain token storage.
+- `hive sync conflicts review --db-path <notes.db>` reviews/export local
+  conflicts.
+- `hive sync notes review --db-path <notes.db>` reviews staged remote note
+  imports and can export generated Markdown inbox files.
+- `hive serve` runs the Rust `hive-sync-api` replacement; use `--store sqlite
+  --sqlite-path <path>` for local durable persistence.
 - `hive pwa check|build|dev|preview` runs the PWA package scripts.
 - `hive version --short` prints the CLI version.
 
@@ -43,6 +50,7 @@ sync API server. Keep MindWeaver `mw` focused on local Markdown workflows.
 - `plan.md` — product boundary, current capabilities, and resume checklist.
 - `docs/architecture.md` — current architecture and migration path.
 - `docs/protocol.md` — sync operation wire contract.
+- `docs/release.md` — current build/install/release packaging path.
 - `docs/hive-sync-progress.md` — implementation status and next steps.
 - `docs/hive-sync-runbook.md` — operational runbook for the legacy sync stack.
 - `docs/hive-sync-cloud-deploy.md` — Cloud Run / Cloud SQL deployment notes.
@@ -75,13 +83,29 @@ The intended long-term CLI entrypoint is `hive`, not top-level `mw sync`.
 cargo run -p hive -- doctor
 cargo run -p hive -- version --short
 cargo run -p hive -- serve --addr 127.0.0.1:8080 --device-tokens desktop=token --permissive-cors
+cargo run -p hive -- serve --addr 127.0.0.1:8080 --store sqlite --sqlite-path .local/hive-sync.db --device-tokens desktop=token --permissive-cors
 cargo run -p hive -- pwa check
 cargo run -p hive -- sync doctor --endpoint http://127.0.0.1:8080
 cargo run -p hive -- sync register --endpoint http://127.0.0.1:8080 --device-id desktop --token token
 cargo run -p hive -- sync pull --endpoint http://127.0.0.1:8080 --token token --cursor 0
+cargo run -p hive -- sync token check --endpoint http://127.0.0.1:8080 --device-id desktop --token token
+cargo run -p hive -- sync token store --device-id desktop --token-stdin
 cargo run -p hive -- sync local-doctor --db-path /path/to/notes.db
 cargo run -p hive -- sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token
+cargo run -p hive -- sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token --worker-iterations 3 --worker-interval 10s
+cargo run -p hive -- sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token --until-empty
+cargo run -p hive -- sync notes review --db-path /path/to/notes.db --export-dir .local/remote-note-inbox --mark-reviewed
+cargo run -p hive -- sync conflicts review --db-path /path/to/notes.db --export-dir .local/conflict-reviews --artifacts-dir .local/conflicts
 ```
+
+Sync client commands accept bearer tokens through `--token`, `HIVE_SYNC_TOKEN`,
+`--token-command '<shell command>'`, or macOS Keychain via
+`--token-from-keychain`. The Keychain default service is `mw/hive-sync`; the
+default account is the `--device-id` for commands that have one.
+
+Pulled remote note operations are deliberately staged in SQLite (`sync_note_imports`)
+and optional generated inbox files. Hive does not overwrite canonical Markdown
+notes automatically.
 
 Validate the Rust side with:
 
@@ -90,3 +114,14 @@ cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
 ```
+
+Or use the convenience targets:
+
+```bash
+make validate
+make build
+make install        # installs to ~/.local/bin/hive by default
+make pwa-build
+```
+
+See `docs/release.md` for the current release/package path.

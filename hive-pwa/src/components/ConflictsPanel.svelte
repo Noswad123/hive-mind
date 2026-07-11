@@ -26,7 +26,7 @@
   {#if openConflictReviewCount > 0}
     <p class="status error">
       Some mobile changes hit sync conflicts. Review the recent list below, then use desktop tooling
-      like <code>mw sync conflicts review --export-dir ~/.local/share/mw/conflicts/reviews</code>
+      like <code>hive sync conflicts review --db-path /path/to/notes.db --export-dir .local/conflict-reviews</code>
       for deeper triage/export workflows.
     </p>
   {:else}

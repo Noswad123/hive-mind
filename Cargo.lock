@@ -409,6 +409,7 @@ dependencies = [
  "hive-core",
  "hive-desktop",
  "hive-server",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -444,8 +445,10 @@ dependencies = [
  "anyhow",
  "axum",
  "hive-core",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "tower-http",

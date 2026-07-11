@@ -14,6 +14,15 @@ the desktop sync client is fully ported.
 cargo run -p hive -- serve --addr 127.0.0.1:8080
 ```
 
+For local durable persistence across restarts:
+
+```bash
+cargo run -p hive -- serve \
+  --addr 127.0.0.1:8080 \
+  --store sqlite \
+  --sqlite-path .local/hive-sync.db
+```
+
 Optional auth-hardening env:
 
 ```bash
@@ -44,14 +53,50 @@ hive sync run \
 ```
 
 Current safety boundary: pulled `todo` operations are applied into `sync_todos`.
-Pulled `note` operations advance entity-version bookkeeping but are not written
-to canonical Markdown yet.
+Pulled `note` operations are staged in `sync_note_imports` and can be exported as
+generated review inbox files; they are not written to canonical Markdown
+automatically.
+
+Review staged remote note imports:
+
+```bash
+hive sync notes review --db-path /path/to/notes.db
+```
+
+Export generated inbox files for manual review, then mark the staged imports
+reviewed:
+
+```bash
+hive sync notes review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/remote-note-inbox \
+  --mark-reviewed
+```
+
+Review/export stale local conflicts:
+
+```bash
+hive sync conflicts review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/conflict-reviews \
+  --artifacts-dir .local/conflicts
+```
+
+After successful export/triage, mark included unresolved conflicts resolved:
+
+```bash
+hive sync conflicts review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/conflict-reviews \
+  --mark-resolved
+```
 
 ## 2) Run one bounded sync cycle
 
 ```bash
-go run ./cmd/mw sync \
+hive sync run \
   --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
   --device-id desktop \
   --token token-desktop
 ```
@@ -64,8 +109,9 @@ Expected observability logs include:
 ## 3) Run bounded worker mode
 
 ```bash
-go run ./cmd/mw sync \
+hive sync run \
   --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
   --device-id desktop \
   --token token-desktop \
   --worker-iterations 12 \
@@ -77,7 +123,24 @@ go run ./cmd/mw sync \
 
 This runs a finite worker loop and exits after the requested iteration count.
 
-### Token input options for `mw sync` and `mw sync doctor`
+To drain the currently pending local outbox in bounded batches, use:
+
+```bash
+hive sync run \
+  --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token token-desktop \
+  --until-empty
+```
+
+`--until-empty` calculates the required iterations from current pending outbox
+count and `--outbox-limit`; raise `--until-empty-max-iterations` if the safety
+cap blocks a large drain. Text output includes completed/requested worker cycles
+and aggregate counters. JSON output returns `{ iterations_requested,
+iterations_completed, aggregate, last }`.
+
+### Token input options for `hive sync` commands
 
 You can provide bearer tokens in four ways:
 
@@ -85,6 +148,10 @@ You can provide bearer tokens in four ways:
 2. `HIVE_SYNC_TOKEN` env var
 3. `--token-command '<shell command that prints token>'`
 4. `--token-from-keychain` (macOS Keychain)
+
+`HIVE_SYNC_API_URL`, `HIVE_SYNC_DEVICE_ID`, `HIVE_SYNC_TOKEN_COMMAND`,
+`HIVE_SYNC_TOKEN_FROM_KEYCHAIN`, `HIVE_SYNC_TOKEN_KEYCHAIN_SERVICE`, and
+`HIVE_SYNC_TOKEN_KEYCHAIN_ACCOUNT` are also supported on matching flags.
 
 If you use Keychain mode:
 
@@ -94,20 +161,24 @@ If you use Keychain mode:
 Store token in Keychain safely from stdin:
 
 ```bash
-printf '%s' '<token-value>' | mw sync token store --token-stdin --device-id desktop
+printf '%s' '<token-value>' | hive sync token store --token-stdin --device-id desktop
 ```
 
 Use token from Keychain:
 
 ```bash
-mw sync --endpoint https://<service-url> --device-id desktop --token-from-keychain
-mw sync doctor --endpoint https://<service-url> --device-id desktop --token-from-keychain
+hive sync run \
+  --endpoint https://<service-url> \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token-from-keychain
+hive sync doctor --endpoint https://<service-url> --device-id desktop --token-from-keychain
 ```
 
 Validate token/device mapping explicitly:
 
 ```bash
-mw sync token check \
+hive sync token check \
   --endpoint https://<service-url> \
   --device-id desktop \
   --token-from-keychain
@@ -116,7 +187,7 @@ mw sync token check \
 Fetch token dynamically at runtime with `--token-command` (no token stored in shell history):
 
 ```bash
-mw sync doctor \
+hive sync doctor \
   --endpoint https://<service-url> \
   --token-command "gcloud secrets versions access latest --secret hive-sync-api-device-tokens --project <project-id> | tr ',' '\\n' | awk -F= '$1==\"desktop\"{print $2}'"
 ```
@@ -126,39 +197,43 @@ mw sync doctor \
 - Transient failures (`429` / `5xx` / network) trigger exponential backoff retry.
 - Non-transient failures fail fast.
 - Outbox failures increment attempt counts and preserve pending status for next cycle.
+- Default retry policy is `--retry-attempts 3 --retry-base-delay 500ms
+  --retry-max-delay 5s`.
 
 ## 5) Conflict handling
 
 - Server push conflict events are persisted to local `sync_conflicts`.
-- Conflict artifacts are written to:
-  - default: `~/.local/share/mw/conflicts`
-  - or `--conflicts-dir`
+- Conflict artifacts are written during review when `--artifacts-dir` is set.
 
 ### Periodic stale-conflict review
 
 Review unresolved conflicts older than 7 days:
 
 ```bash
-mw sync conflicts review
+hive sync conflicts review --db-path /path/to/notes.db
 ```
 
 Export the current stale set to JSON:
 
 ```bash
-mw sync conflicts review --export-dir ~/.local/share/mw/conflicts/reviews
+hive sync conflicts review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/conflict-reviews \
+  --artifacts-dir .local/conflicts
 ```
 
 After export/triage, mark the exported set resolved:
 
 ```bash
-mw sync conflicts review \
-  --export-dir ~/.local/share/mw/conflicts/reviews \
+hive sync conflicts review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/conflict-reviews \
   --mark-resolved
 ```
 
 Notes:
 
-- `--older-than` defaults to `168h` (7 days)
+- `--older-than-hours` defaults to `168` (7 days)
 - `--include-resolved` widens the report without affecting default hygiene workflow
 - `--mark-resolved` requires an export destination for safer review bookkeeping
 
@@ -176,11 +251,13 @@ Notes:
 
 ## 7a) Current phone-to-desktop visibility expectation
 
-- The Phase 2 PWA pushes note/todo operations into the shared sync stream.
-- Desktop `mw sync` can pull and apply those operations into local sync persistence.
-- At the moment, this does **not** guarantee visible markdown file changes in the main notes workspace.
-- For now, treat successful cursor advancement and applied-operation counts as stronger confirmation than
-  filesystem diffs when validating phone-originated sync.
+- The PWA pushes note/todo operations into the shared sync stream.
+- Desktop `hive sync run` applies pulled todos into `sync_todos` and stages pulled
+  notes into `sync_note_imports`.
+- At the moment, this does **not** create visible markdown file changes in the
+  main notes workspace until you review/export/import the generated inbox files.
+- For validation, treat cursor advancement, applied-operation counts, and staged
+  note import counts as stronger confirmation than filesystem diffs.
 
 ## 8) Troubleshooting quick checks
 
@@ -214,7 +291,7 @@ Manual token rotation checklist:
 
 ## 10) Cloud deployment playbook
 
-For Cloud Run + Cloud SQL deployment steps and scripts, see:
+For Cloud Run deployment steps and scripts, see:
 
 - `docs/hive-sync-cloud-deploy.md`
 - `scripts/cloud/bootstrap-hive-sync-infra.sh`

@@ -15,6 +15,10 @@ IMAGE_TAG="${IMAGE_TAG:-$(date +%Y%m%d-%H%M%S)}"
 
 USE_CLOUD_SQL="${USE_CLOUD_SQL:-false}"
 CLOUD_SQL_INSTANCE="${CLOUD_SQL_INSTANCE:-hive-sync-pg}"
+ALLOW_UNSUPPORTED_CLOUD_SQL="${ALLOW_UNSUPPORTED_CLOUD_SQL:-false}"
+
+HIVE_STORE="${HIVE_STORE:-memory}"
+HIVE_SQLITE_PATH="${HIVE_SQLITE_PATH:-/data/hive-sync.db}"
 
 RUN_SA_NAME="${RUN_SA_NAME:-hive-sync-api-runner}"
 RUN_SA_EMAIL="${RUN_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -32,6 +36,30 @@ if [[ -z "${PROJECT_ID}" ]]; then
   echo "❌ PROJECT_ID is required"
   echo "   Example: PROJECT_ID=my-gcp-project scripts/cloud/deploy-hive-sync-api.sh"
   exit 1
+fi
+
+case "${HIVE_STORE}" in
+  memory|sqlite) ;;
+  *)
+    echo "❌ HIVE_STORE must be memory or sqlite (got: ${HIVE_STORE})"
+    exit 1
+    ;;
+esac
+
+if [[ "${USE_CLOUD_SQL}" == "true" && "${ALLOW_UNSUPPORTED_CLOUD_SQL}" != "true" ]]; then
+  echo "❌ USE_CLOUD_SQL=true is not supported by the current Rust hive server yet."
+  echo "   Rust hive serve currently supports HIVE_STORE=memory or HIVE_STORE=sqlite only."
+  echo "   Cloud SQL/Postgres support is deferred; set ALLOW_UNSUPPORTED_CLOUD_SQL=true only to attach Cloud SQL for experiments."
+  exit 1
+fi
+
+if [[ "${HIVE_STORE}" == "sqlite" ]]; then
+  echo "⚠️  HIVE_STORE=sqlite on Cloud Run uses the container filesystem unless you add a real volume."
+  echo "   This is useful for single-instance smoke tests, not durable multi-instance production."
+  if [[ "${MAX_INSTANCES}" != "1" ]]; then
+    echo "❌ HIVE_STORE=sqlite requires MAX_INSTANCES=1 to avoid divergent per-instance SQLite files."
+    exit 1
+  fi
 fi
 
 if ! command -v gcloud >/dev/null 2>&1; then
@@ -54,6 +82,10 @@ fi
 echo "🔧 Project:      ${PROJECT_ID}"
 echo "🔧 Region:       ${REGION}"
 echo "🔧 Service:      ${SERVICE_NAME}"
+echo "🔧 Store:        ${HIVE_STORE}"
+if [[ "${HIVE_STORE}" == "sqlite" ]]; then
+  echo "🔧 SQLite path:  ${HIVE_SQLITE_PATH}"
+fi
 echo "🔧 Cloud SQL:    ${USE_CLOUD_SQL}"
 if [[ "${USE_CLOUD_SQL}" == "true" ]]; then
   echo "🔧 SQL instance: ${CLOUD_SQL_INSTANCE}"
@@ -121,7 +153,12 @@ if [[ "${USE_CLOUD_SQL}" == "true" ]]; then
   DEPLOY_ARGS+=(--add-cloudsql-instances "${INSTANCE_CONNECTION_NAME}")
 fi
 
-DEPLOY_ARGS+=(--set-env-vars "HIVE_ADDR=0.0.0.0:8080,HIVE_SYNC_PERMISSIVE_CORS=${PERMISSIVE_CORS}")
+ENV_VARS="HIVE_ADDR=0.0.0.0:8080,HIVE_STORE=${HIVE_STORE},HIVE_SYNC_PERMISSIVE_CORS=${PERMISSIVE_CORS}"
+if [[ "${HIVE_STORE}" == "sqlite" ]]; then
+  ENV_VARS=",${ENV_VARS},HIVE_SQLITE_PATH=${HIVE_SQLITE_PATH}"
+  ENV_VARS="${ENV_VARS#,}"
+fi
+DEPLOY_ARGS+=(--set-env-vars "${ENV_VARS}")
 
 if [[ "${ALLOW_UNAUTHENTICATED}" == "true" ]]; then
   DEPLOY_ARGS+=(--allow-unauthenticated)
@@ -138,9 +175,13 @@ echo
 echo "✅ Deployment complete"
 echo "Service URL: ${SERVICE_URL}"
 echo "Image:       ${IMAGE_URI}"
+echo "Store:       ${HIVE_STORE}"
+if [[ "${HIVE_STORE}" == "memory" ]]; then
+  echo "⚠️  Store is in-memory; data is lost on instance restart/revision replacement."
+fi
 echo
 echo "Health check:"
 echo "  curl ${SERVICE_URL}/healthz"
 echo
 echo "Sync doctor remote check:"
-echo "  hive sync doctor --endpoint ${SERVICE_URL} --token <device-token>"
+echo "  hive sync doctor --endpoint ${SERVICE_URL} --device-id <device-id> --token <device-token>"

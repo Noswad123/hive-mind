@@ -19,7 +19,7 @@
       type="url"
       value={endpoint}
       on:input={onEndpointInput}
-      placeholder="https://hive-sync-api.example.run.app"
+      placeholder="http://127.0.0.1:8080"
     />
   </label>
 
@@ -29,7 +29,7 @@
       type="text"
       value={deviceID}
       on:input={onDeviceIDInput}
-      placeholder="personal"
+      placeholder="phone"
     />
   </label>
 

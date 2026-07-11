@@ -1,10 +1,19 @@
 # Hive Sync Backup & Recovery
 
-> Status: parked legacy Hive Sync notes. The Rust `mw` CLI no longer supports
-> top-level `mw sync`; local notes use `mw notes sync` / `mw seal`. Revisit these
-> commands only if Hive Sync returns under the future `hive` command boundary.
+> Status: backup guidance for future durable cloud backends. The current Rust
+> `hive serve` cloud path supports `memory` and SQLite stores only; Cloud SQL
+> Postgres backup commands are retained for the deferred Postgres backend.
 
-This guide establishes data safety for `hive-sync-api` (Cloud SQL Postgres).
+This guide establishes data safety for `hive-sync-api` once a durable backend is
+selected.
+
+Current backend caveats:
+
+- `HIVE_STORE=memory`: no backup is possible; state is intentionally ephemeral.
+- `HIVE_STORE=sqlite` on a normal Cloud Run filesystem: not durable across
+  instance/revision lifecycle and not suitable for production backups.
+- Cloud SQL/Postgres: backup scripts apply only after a Rust Postgres store is
+  implemented and the deployment uses it.
 
 ## What this covers
 
@@ -77,7 +86,7 @@ gcloud sql import sql hive-sync-pg \
 1. Confirm target instance and database.
 2. Export a fresh pre-restore backup before importing.
 3. Import selected backup file.
-4. Run `mw sync doctor --skip-remote` and remote doctor check.
+4. Run `hive sync local-doctor --db-path /path/to/notes.db` and remote doctor check.
 5. Verify API health and sample client sync cycle.
 
 ## 5) Optional scheduling

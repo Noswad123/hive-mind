@@ -1,15 +1,25 @@
-# Hive Sync Cloud Deployment (Cloud Run + Cloud SQL)
+# Hive Sync Cloud Deployment (Cloud Run + Rust `hive serve`)
 
-> Status: parked legacy Hive Sync notes. The Rust `mw` CLI no longer supports
-> top-level `mw sync`; local notes use `mw notes sync` / `mw seal`. Revisit these
-> commands only if Hive Sync returns under the future `hive` command boundary.
+> Status: active Rust `hive` deployment notes. The current Rust server supports
+> in-memory and SQLite stores. Cloud SQL/Postgres scripts are kept as a deferred
+> hardening path and must not be treated as an active durable backend until a
+> Postgres store is implemented.
 
 This guide deploys `hive-sync-api` to Google Cloud using:
 
 - **Cloud Run** (API runtime)
-- **Cloud SQL for PostgreSQL** (persistent sync store)
-- **Secret Manager** (DATABASE_URL + device tokens)
+- **Secret Manager** (device tokens)
 - **Artifact Registry** (container images)
+
+## Current persistence modes
+
+- `HIVE_STORE=memory` (default): safe for API/PWA smoke checks, but data is lost
+  on restart, scale-out, or revision replacement.
+- `HIVE_STORE=sqlite`: useful only for single-instance experiments unless a real
+  persistent volume is attached. The deploy script requires `MAX_INSTANCES=1` for
+  this mode to avoid divergent per-instance databases.
+- Cloud SQL/Postgres: **not implemented in Rust `hive serve` yet**. The old
+  Cloud SQL bootstrap/backup scripts are retained for future work and are opt-in.
 
 ## 1) Prerequisites
 
@@ -41,17 +51,18 @@ REGION="us-central1" \
 scripts/cloud/bootstrap-hive-sync-infra.sh
 ```
 
-This creates/ensures:
+This creates/ensures by default:
 
 - required GCP APIs
 - Artifact Registry repo (`hive-sync`)
-- Cloud SQL instance (`hive-sync-pg`)
-- Postgres DB + app user
 - Secret Manager secrets:
-  - `hive-sync-api-database-url`
   - `hive-sync-api-device-tokens` (placeholder by default)
 - runtime service account (`hive-sync-api-runner@<project>.iam.gserviceaccount.com`)
-- IAM grants for Cloud SQL + Secret Manager access
+- IAM grants for Secret Manager access
+
+To provision legacy/future Cloud SQL resources anyway, run bootstrap with
+`PROVISION_CLOUD_SQL=true`. The current Rust server will not use `DATABASE_URL`
+until a Postgres store is added.
 
 ### Important after bootstrap
 
@@ -88,7 +99,7 @@ merge automatically with older versions.
 Quick validation:
 
 ```bash
-mw sync token check \
+hive sync token check \
   --endpoint "https://<service-url>" \
   --device-id "desktop" \
   --token "abc123"
@@ -99,17 +110,31 @@ mw sync token check \
 ```bash
 PROJECT_ID="your-gcp-project" \
 REGION="us-central1" \
-CLOUD_SQL_INSTANCE="hive-sync-pg" \
 scripts/cloud/deploy-hive-sync-api.sh
 ```
+
+This deploys `HIVE_STORE=memory` by default. For an explicit SQLite single-instance
+smoke deployment:
+
+```bash
+PROJECT_ID="your-gcp-project" \
+REGION="us-central1" \
+HIVE_STORE="sqlite" \
+HIVE_SQLITE_PATH="/data/hive-sync.db" \
+MAX_INSTANCES=1 \
+scripts/cloud/deploy-hive-sync-api.sh
+```
+
+Do not use SQLite mode as a durable multi-instance production backend without a
+real persistent volume and an operational backup story.
 
 The deploy script:
 
 1. builds/pushes container image using `Dockerfile.hive-sync-api`
 2. deploys Cloud Run service
-3. attaches Cloud SQL instance
-4. injects secrets as runtime env vars
-5. sets `HIVE_SYNC_REQUIRE_AUTH` (default `true`)
+3. injects device-token secret as `HIVE_SYNC_DEVICE_TOKENS` when present
+4. sets `HIVE_STORE`, `HIVE_SQLITE_PATH` when applicable, and
+   `HIVE_SYNC_PERMISSIVE_CORS`
 
 ## 4) Verify deployment
 
@@ -122,29 +147,31 @@ curl "https://<service-url>/healthz"
 Optional remote doctor check (token required if auth enabled):
 
 ```bash
-mw sync doctor --endpoint "https://<service-url>" --token "<device-token>"
+hive sync doctor --endpoint "https://<service-url>" --device-id desktop --token "<device-token>"
 ```
 
 Safer local storage/fetch on macOS (Keychain):
 
 ```bash
-printf '%s' '<device-token>' | mw sync token store --token-stdin --device-id desktop
-mw sync doctor --endpoint "https://<service-url>" --device-id desktop --token-from-keychain
+printf '%s' '<device-token>' | hive sync token store --token-stdin --device-id desktop
+hive sync doctor --endpoint "https://<service-url>" --device-id desktop --token-from-keychain
 ```
 
 Alternative (dynamic fetch via Secret Manager, no local persistence):
 
 ```bash
-mw sync doctor \
+hive sync doctor \
   --endpoint "https://<service-url>" \
+  --device-id desktop \
   --token-command "gcloud secrets versions access latest --secret hive-sync-api-device-tokens --project $PROJECT_ID | tr ',' '\\n' | awk -F= '$1==\"desktop\"{print $2}'"
 ```
 
 ## 5) Client usage against cloud endpoint
 
 ```bash
-mw sync \
+hive sync run \
   --endpoint "https://<service-url>" \
+  --db-path /path/to/notes.db \
   --device-id "desktop" \
   --token "<device-token>"
 ```
@@ -152,8 +179,9 @@ mw sync \
 Or via Keychain on macOS:
 
 ```bash
-mw sync \
+hive sync run \
   --endpoint "https://<service-url>" \
+  --db-path /path/to/notes.db \
   --device-id "desktop" \
   --token-from-keychain
 ```
@@ -164,40 +192,46 @@ Both scripts support env overrides:
 
 - `PROJECT_ID`
 - `REGION`
-- `CLOUD_SQL_INSTANCE`
 - `RUN_SA_NAME`
 - `ARTIFACT_REPOSITORY`
-- `DB_URL_SECRET_NAME`
 - `DEVICE_TOKENS_SECRET_NAME`
 
 Additional bootstrap-only:
 
 - `CLOUD_SQL_DATABASE_VERSION` (default `POSTGRES_15`)
+- `PROVISION_CLOUD_SQL` (default `false`; future/deferred Postgres path)
+- `CLOUD_SQL_INSTANCE`
 - `CLOUD_SQL_TIER` (default `db-custom-1-3840`)
 - `CLOUD_SQL_STORAGE_GB` (default `20`)
 - `CLOUD_SQL_DB_NAME` (default `hive_sync`)
 - `CLOUD_SQL_DB_USER` (default `hive_sync_app`)
+- `DB_URL_SECRET_NAME`
 - `DB_PASSWORD` (auto-generated if omitted)
 
 Additional deploy-only:
 
 - `SERVICE_NAME` (default `hive-sync-api`)
 - `IMAGE_NAME` / `IMAGE_TAG`
-- `REQUIRE_AUTH` (default `true`)
-- `CORS_ALLOWED_ORIGINS` (optional; `;` or `,` separated origin list, e.g. `https://pwa.example.com;http://localhost:5173`)
+- `HIVE_STORE` (`memory` or `sqlite`; default `memory`)
+- `HIVE_SQLITE_PATH` (default `/data/hive-sync.db` when `HIVE_STORE=sqlite`)
+- `PERMISSIVE_CORS` (default `true`)
+- `CORS_ALLOWED_ORIGINS` is retained for operator notes, but the current Rust
+  server exposes a boolean permissive-CORS mode via `PERMISSIVE_CORS`.
 - `ALLOW_UNAUTHENTICATED` (default `true`)
 - `MIN_INSTANCES` / `MAX_INSTANCES`
 
 ### Browser/PWA note
 
-If PWA and API are on different origins, set `CORS_ALLOWED_ORIGINS` during deploy.
+The current Rust server uses permissive CORS when `PERMISSIVE_CORS=true`, which is
+the deploy-script default for PWA/browser development.
+
+If/when origin-specific CORS is added, use `CORS_ALLOWED_ORIGINS` during deploy.
 
 Example:
 
 ```bash
 PROJECT_ID="your-gcp-project" \
 REGION="us-east1" \
-CLOUD_SQL_INSTANCE="hive-sync-pg" \
 CORS_ALLOWED_ORIGINS="https://hive-pwa-abc-ue.a.run.app;http://localhost:5173" \
 scripts/cloud/deploy-hive-sync-api.sh
 ```
@@ -207,7 +241,6 @@ For LAN phone testing against the local Vite dev server, include the machine's L
 ```bash
 PROJECT_ID="your-gcp-project" \
 REGION="us-east1" \
-CLOUD_SQL_INSTANCE="hive-sync-pg" \
 CORS_ALLOWED_ORIGINS="http://localhost:5173;http://<lan-ip>:5173" \
 bash scripts/cloud/deploy-hive-sync-api.sh
 ```
@@ -239,4 +272,5 @@ gcloud run services update-traffic hive-sync-api \
 After initial deployment, set up:
 
 - monitoring and alerting: `docs/hive-sync-monitoring.md`
-- backup and recovery baseline: `docs/hive-sync-backup-recovery.md`
+- backup and recovery baseline only after a durable backend is selected:
+  `docs/hive-sync-backup-recovery.md`

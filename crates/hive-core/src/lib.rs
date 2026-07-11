@@ -113,6 +113,16 @@ pub struct DeviceRegisterResponse {
     pub registered: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenCheckReport {
+    pub endpoint: String,
+    pub device_id: String,
+    pub status: String,
+    pub http_status: u16,
+    pub registered: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityType {
@@ -217,6 +227,95 @@ pub fn register_device(
         "/v1/devices/register",
         Some(req),
     )
+}
+
+pub fn check_token_for_device(
+    endpoint: &str,
+    token: &str,
+    device_id: &str,
+) -> Result<TokenCheckReport> {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    let device_id = device_id.trim();
+    let token = token.trim();
+    if endpoint.is_empty() {
+        bail!("endpoint is required");
+    }
+    if device_id.is_empty() {
+        bail!("device-id is required");
+    }
+    if token.is_empty() {
+        bail!("token is required");
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .context("build HTTP client")?;
+    let resp = client
+        .post(format!("{endpoint}/v1/devices/register"))
+        .bearer_auth(token)
+        .json(&DeviceRegistration {
+            device_id: device_id.to_string(),
+            device_name: String::new(),
+            platform: String::new(),
+            app_version: String::new(),
+        })
+        .send()
+        .context("token check request")?;
+    let status = resp.status();
+    let http_status = status.as_u16();
+    let body = resp.text().context("read token check response")?;
+    if status.is_success() {
+        let registered = serde_json::from_str::<DeviceRegisterResponse>(&body)
+            .map(|payload| payload.registered)
+            .unwrap_or(false);
+        return Ok(TokenCheckReport {
+            endpoint: endpoint.to_string(),
+            device_id: device_id.to_string(),
+            status: if registered { "ok" } else { "attention" }.to_string(),
+            http_status,
+            registered,
+            message: if registered {
+                "token is valid for device_id"
+            } else {
+                "registration response did not confirm token/device match"
+            }
+            .to_string(),
+        });
+    }
+
+    let message = extract_error_message(&body);
+    Ok(TokenCheckReport {
+        endpoint: endpoint.to_string(),
+        device_id: device_id.to_string(),
+        status: match http_status {
+            401 => "unauthorized",
+            403 => "forbidden",
+            _ => "error",
+        }
+        .to_string(),
+        http_status,
+        registered: false,
+        message,
+    })
+}
+
+fn extract_error_message(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.as_str())
+                .map(str::trim)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 pub fn push_operations(
