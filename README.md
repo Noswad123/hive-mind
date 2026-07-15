@@ -220,6 +220,8 @@ current operator guidance.
 ## Documentation
 
 - `docs/architecture.md` — architecture and component boundaries
+- `docs/product-architecture-roadmap.md` — product architecture needed for real
+  multi-device note/todo sync and future MindWeaver integration
 - `docs/protocol.md` — sync API contract
 - `docs/hive-sync-runbook.md` — operational examples
 - `docs/hive-sync-mobile-onboarding.md` — PWA/mobile setup and smoke tests

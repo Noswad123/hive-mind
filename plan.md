@@ -76,6 +76,9 @@ offers mobile/web companion surfaces.
 
 ## Roadmap
 
+For the full product architecture and phased roadmap toward real multi-device
+note/todo sync, see `docs/product-architecture-roadmap.md`.
+
 1. Add a cloud-suitable durable server backend, likely Postgres/Cloud SQL.
 2. Improve reviewed remote-note import UX from generated inbox into canonical
    Markdown workflows.
