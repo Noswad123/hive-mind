@@ -1,12 +1,9 @@
 # Hive Sync Runbook (MVP)
 
-> Status: parked legacy Hive Sync notes. The Rust `mw` CLI no longer supports
-> top-level `mw sync`; local notes use `mw notes sync` / `mw seal`. Revisit these
-> commands only if Hive Sync returns under the future `hive` command boundary.
+> Status: active runbook for Rust `hive` sync/API operations.
 
-This runbook covers day-to-day operation for `hive-sync-api`. The active command
-boundary is now Rust `hive`; old `mw sync` examples are legacy references until
-the desktop sync client is fully ported.
+This runbook covers day-to-day operation for `hive-sync-api` and the Rust `hive`
+desktop sync bridge.
 
 ## 1) Start the sync API locally
 
@@ -285,9 +282,9 @@ then the actual bearer token for `desktop` is just `abc123` (not `desktop=abc123
 - Device token rotation workflow.
 - Secret Manager-backed device token loading.
 
-Manual token rotation checklist:
+Manual token rotation procedure:
 
-- `docs/hive-sync-token-rotation-checklist.md`
+- `docs/hive-sync-token-rotation.md`
 
 ## 10) Cloud deployment playbook
 

@@ -1,242 +1,92 @@
-# Hive Mind Plan
+# Hive Mind Status and Roadmap
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
-## Direction
+Hive Mind is the optional sync/API/PWA companion for MindWeaver. MindWeaver keeps
+canonical local Markdown workflows; Hive exchanges operations between devices and
+offers mobile/web companion surfaces.
 
-Hive Mind can be treated as its own optional app suite instead of being fully
-folded into the Rust `mw` notes CLI.
+## Current production boundary
 
-MindWeaver remains the local-first notes system. Hive Mind provides optional
-multi-device sync, cloud API, and mobile/web companion surfaces around that
-local notes system.
+- `mw` owns local Markdown notes, local todo projection, ingestion, search, and
+  desktop source-of-truth workflows.
+- `hive` owns remote operation sync, device bearer-token auth, sync diagnostics,
+  conflict transport, and cloud/PWA/mobile integration.
+- `hive-pwa` owns browser/mobile capture, lightweight editing, local IndexedDB
+  state, manual sync, and sync health/conflict visibility.
 
-## Current priority
+## Implemented capabilities
 
-Hive Mind has been split into its own project with a dedicated Rust `hive` CLI
-boundary. The first priority is not a full sync rewrite; it is to stabilize the
-project shape, keep the PWA runnable, and define the bridge from MindWeaver's
-Markdown/source-of-truth workflow into Hive's operation sync model.
+### CLI and server
 
-Resume from the existing Go sync API/client/PWA behavior rather than redesigning
-from scratch.
-
-## Current components
-
-### 1. Desktop MindWeaver / `mw`
-
-- Rust `mw` is now the primary local notes CLI.
-- Legacy Go `mw` remains buildable under `legacy/go` and is still the full sync
-  client oracle.
-- Rust `mw` does not expose a top-level `mw sync` command; local notes use
-  `mw notes sync` / `mw seal`.
-- The Rust database layer still has sync/outbox primitives that can be reused if
-  Hive Sync returns under a non-conflicting boundary.
-- The new Rust `hive` CLI now owns the HTTP sync boundary and has initial
-  server/client transport parity. Desktop local-DB sync/apply behavior now has
-  an initial Rust bridge for outbox push, cursor pull, entity-version tracking,
-  and `sync_todos` application. The legacy Go client remains the oracle for
-  remaining conflict artifact/review and Markdown materialization behavior.
-
-### 2. `hive-sync-api`
-
-Current Rust API service capabilities, ported from the Go oracle:
-
-- Entrypoint: `hive serve`.
-- HTTP endpoints:
+- `hive serve` runs the Rust sync API.
+- Server endpoints:
   - `GET /healthz`
   - `GET /v1/sync/state`
+  - `POST /v1/devices/register`
   - `POST /v1/sync/push`
   - `GET /v1/sync/pull`
-  - `POST /v1/devices/register`
-- Storage backends:
-  - in-memory store for local/dev usage
-  - SQLite store for durable local/dev persistence
-  - Postgres/Cloud SQL store remains to be evaluated for cloud deployment
-- Device bearer-token auth middleware.
-- CORS/preflight support for browser/PWA clients.
-- Conflict behavior:
-  - detects stale `base_version`
-  - resolves by last-write-wins using `client_updated_at`
-  - tie-breaks by `op_id`, then `device_id`
-  - persists conflict events
-  - excludes losing operations from pull streams
-- Cloud deployment support:
-  - Cloud Run container file
-  - Cloud SQL bootstrap/deploy scripts
-  - monitoring setup script
-  - backup/export scripts
+- Server store backends:
+  - in-memory store for smoke/dev usage
+  - SQLite store for local durable smoke/dev usage
+- Device bearer-token auth.
+- Permissive CORS mode for local browser/PWA development.
+- Last-write-wins conflict resolution for stale `base_version` pushes.
 
-### 3. Rust desktop sync client / legacy Go oracle
+### Desktop sync bridge
 
-Current desktop sync client capabilities:
+- `hive sync run` pushes local `sync_outbox` rows.
+- Pulls remote operations by cursor.
+- Persists local cursor in `sync_state`.
+- Tracks local entity versions in `sync_entity_versions`.
+- Applies pulled todo operations into `sync_todos`.
+- Stages pulled note operations into `sync_note_imports`.
+- Supports transient retry/backoff, bounded worker iterations, and `--until-empty`.
+- `hive sync notes review` exports staged note imports to generated Markdown inbox
+  files and can mark them reviewed.
+- `hive sync conflicts review` exports conflict review snapshots, writes
+  per-conflict artifacts, and can mark conflicts resolved.
+- Token sources: explicit token, env var, command output, and macOS Keychain.
 
-- Rust `hive sync run` pushes local `sync_outbox` operations to `hive-sync-api`.
-- Rust `hive sync run` pulls remote operations by cursor.
-- Rust `hive sync run` persists local cursor in `sync_state`.
-- Rust `hive sync run` tracks entity versions in `sync_entity_versions`.
-- Rust `hive sync run` applies pulled todo operations into `sync_todos`.
-- Rust `hive sync run` stages pulled note operations into `sync_note_imports`.
-- Rust `hive sync notes review` lists staged note imports, exports generated
-  Markdown inbox files, and can mark reviewed imports reviewed.
-- Pulled note operations are intentionally not written directly to canonical
-  Markdown.
-- Rust `hive sync conflicts review` exports local conflict review snapshots,
-  writes per-conflict artifacts, and can mark reviewed conflicts resolved.
-- Rust `hive` supports explicit/env bearer tokens, `--token-command`, macOS
-  Keychain token read/store, and `hive sync token check`.
-- Rust `hive sync run` supports transient retry/backoff, bounded worker
-  iterations/intervals, `--until-empty`, and aggregate worker output.
-- Remaining Go-oracle behavior includes richer observability/cursor-lag reporting
-  and reviewed Markdown materialization.
-- Observability counters include:
-  - pushed accepted/rejected
-  - pulled applied
-  - conflicts logged
-  - conflict artifact count
-  - cursor lag
-- Supports token input through:
-  - explicit `--token`
-  - `HIVE_SYNC_TOKEN`
-  - `--token-command`
-  - macOS Keychain via `--token-from-keychain`
-- Supports conflict hygiene:
-  - local conflict persistence
-  - artifact writing
-  - stale conflict review/export/mark-resolved workflow
+### PWA
 
-### 4. `hive-pwa`
+- Svelte/Vite app shell with service worker and manifest.
+- Endpoint/device/token setup UI.
+- Token validation and remote sync-state checks.
+- IndexedDB-backed settings, notes, todos, queue, sync metadata, and conflicts.
+- Manual push/pull sync against Rust `hive serve`.
+- Mobile note/todo creation and editing baseline.
+- Sync health and conflict visibility surfaces.
 
-Current PWA capabilities:
+### Cloud/deployment
 
-- Svelte + Vite app shell.
-- Web app manifest and service worker registration baseline.
-- Endpoint/device/token setup UI with local Rust `hive serve` as the default dev
-  endpoint.
-- Token/device validation against the sync API.
-- IndexedDB persistence for:
-  - settings/config
-  - sync metadata
-  - draft sync queue
-  - note records
-  - todo records
-  - local sync entity versions
-  - conflict log entries
-- Minimal note list/editor.
-- Minimal todo capture/toggle/delete/edit surfaces.
-- Manual sync action:
-  - pushes queued local note/todo operations
-  - pulls remote operations by cursor
-  - applies pulled operations into IndexedDB state
-  - updates local cursor and last-success metadata
-- Sync health UI:
-  - online/offline status
-  - local applied cursor
-  - observed remote cursor
-  - observed server time
-  - last remote check
-  - last successful sync
-- Sync trust signals:
-  - local vs remote source labels
-  - local-only / queued / synced / conflict states
-  - synced-content counters
-- Mobile conflict visibility:
-  - open conflict banner
-  - recent conflict list
-  - winner/loser device metadata
-  - local mark-reviewed action
-- Notes/todos usability uplift:
-  - search/filter
-  - selected item detail panes
-  - editable todo section/done/meta fields
-- Automated validation against Rust `hive serve` passes; physical-device smoke
-  evidence remains manual/pending.
+- Dockerfile for `hive serve` container image.
+- Cloud Build config and Cloud Run deploy script.
+- Monitoring setup for `/healthz` uptime and Cloud Run 5xx alerting.
+- Backup docs describe current limitations and deferred durable backend work.
 
-## Current sync model
+## Safety boundaries
 
-- Entity types: `note`, `todo`.
-- Operation types: `upsert`, `delete`.
-- Desktop/source local changes enqueue outbox rows.
-- Clients push operations to the API with idempotency keys and base versions.
-- Clients pull operations from the API by cursor.
-- Conflict detection is version-based.
-- Markdown remains the canonical MindWeaver source of truth on desktop.
-- SQLite/IndexedDB are projections and sync caches.
+- Pulled notes are not written directly to canonical Markdown.
+- Remote notes are staged for review and optional generated inbox export.
+- `HIVE_STORE=memory` is not durable.
+- Cloud Run SQLite mode is a single-instance smoke/development option unless a
+  real persistent volume and backup strategy are added.
+- Cloud SQL/Postgres support is not implemented in Rust `hive serve` yet.
 
-## Known limitations
+## Roadmap
 
-- Rust `mw` does not yet implement full HTTP push/pull sync.
-- Phone-originated notes can sync into desktop-side staging and generated review
-  inbox files, but should not be expected to overwrite Markdown files in the main
-  notes workspace automatically.
-- Physical-device PWA smoke tests still require manual execution and evidence
-  capture.
-- The PWA is useful as a companion capture/review app, not yet a complete mobile
-  replacement for the desktop Markdown workflow.
-- Launchd/periodic desktop sync templates are deferred until real usage hardens
-  scheduler expectations.
+1. Add a cloud-suitable durable server backend, likely Postgres/Cloud SQL.
+2. Improve reviewed remote-note import UX from generated inbox into canonical
+   Markdown workflows.
+3. Add richer server/client observability, including cursor lag and queue aging.
+4. Add launchd/systemd examples for periodic desktop sync workers.
+5. Add package-manager distribution once the CLI surface stabilizes.
+6. Expand PWA conflict review and background/offline retry behavior where browser
+   support allows it.
 
-## Product boundary
+## Reference implementation
 
-Treat Hive Mind as an optional app suite with a stable integration contract:
-
-- `mw` owns local Markdown notes, ingestion, querying, todos, projections, and
-  the desktop source-of-truth workflow.
-- Hive Sync owns remote operation exchange, cursoring, conflict events, device
-  auth, and cloud/mobile sync surfaces.
-- Hive PWA owns mobile/web capture, review, lightweight editing, sync health, and
-  conflict visibility.
-- The bridge is the sync operation protocol plus local projection stores.
-
-This means the Rust port does not need to absorb every Hive feature before the
-Go sync stack can remain useful. Hive can evolve as a separate app while sharing
-the same operation model and storage contracts.
-
-## Recommended next steps
-
-1. Keep the legacy Go sync stack buildable as the full sync oracle until Rust
-   `hive` reaches protocol/client parity.
-2. Define the stable sync protocol contract in one place:
-   - operation JSON shapes
-   - idempotency key rules
-   - cursor semantics
-   - conflict event shape
-   - auth requirements
-3. Decide remote-to-Markdown materialization semantics before enabling automatic
-   desktop writeback from phone-originated operations.
-4. Prioritize validation over porting breadth:
-   - run iOS/Android PWA smoke tests
-   - verify Cloud Run sync state
-   - verify desktop cursor advancement
-   - verify conflict visibility and review flow
-5. Port the desktop sync client into Rust `hive` incrementally:
-   - remote doctor/state check
-   - push pending outbox operations
-   - pull operations by cursor
-   - conflict persistence/artifacts
-   - reviewed remote-to-Markdown import
-
-## Resume checklist for later
-
-Before doing new Hive work, quickly re-check the current implementation in
-`/Users/jdawson/Projects/mind-weaver`:
-
-1. `legacy/go/internal/features/syncclient/client.go`
-2. `legacy/go/internal/features/syncapi/`
-3. `legacy/go/internal/infra/db/sync_*.go`
-4. `legacy/go/internal/mwcli/buildSync*.go`
-5. `apps/hive-pwa/src/hiveSyncEngine.ts`
-6. `apps/hive-pwa/README.md`
-
-New work should generally land in this project under the Rust `hive` command
-boundary unless it is a MindWeaver local-Markdown concern.
-
-## Reference docs
-
-- `docs/hive-sync-progress.md`
-- `docs/hive-sync-runbook.md`
-- `docs/hive-sync-cloud-deploy.md`
-- `docs/hive-sync-monitoring.md`
-- `docs/hive-sync-backup-recovery.md`
-- `docs/hive-sync-mobile-onboarding.md`
-- `/Users/jdawson/Projects/mind-weaver/apps/hive-pwa/README.md`
+`legacy/go-reference/` contains the copied Go implementation used as a parity
+oracle when Rust behavior is unclear. New active work should land in this repo
+under the `hive` command boundary unless it is a MindWeaver local-Markdown concern.

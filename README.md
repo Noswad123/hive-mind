@@ -1,127 +1,231 @@
 # Hive Mind
 
-Hive Mind is the optional sync/API/mobile companion project for MindWeaver.
+Hive Mind is the sync/API/mobile companion project for MindWeaver.
 
-- Project folder/repository name: `hive-mind`
-- Command/binary name: `hive`
-- Source-of-truth MindWeaver workflow: local Markdown managed by Rust `mw`
+- Repository/folder: `hive-mind`
+- CLI/binary: `hive`
+- MindWeaver remains Markdown-first; Hive handles optional remote sync, device
+  auth, the sync API, and the PWA companion.
 
-## Architecture
-
-Hive Mind is now split around a dedicated `hive` command boundary:
+## What is in this repo
 
 ```text
 hive-mind/
-  crates/hive          Rust CLI entrypoint: `hive`
-  crates/hive-core     shared diagnostics, protocol/client types, and future sync logic
-  crates/hive-desktop  desktop SQLite outbox/cursor/todo bridge
-  crates/hive-server   Rust sync API server with in-memory store
-  hive-pwa/            Svelte/Vite mobile-web companion
-  docs/                protocol, runbook, deployment, migration notes
-  legacy/go-reference  copied Go oracle for parity checks during the port
+  crates/hive          CLI entrypoint: `hive`
+  crates/hive-core     shared protocol/client/diagnostic types
+  crates/hive-desktop  desktop SQLite bridge for MindWeaver sync tables
+  crates/hive-server   Rust sync API server used by `hive serve`
+  hive-pwa/            Svelte/Vite browser/mobile companion
+  scripts/cloud/       Cloud Run build/deploy/monitoring/backup helpers
+  docs/                architecture, protocol, runbooks, deployment, release docs
+  legacy/go-reference  copied Go implementation used as a behavior oracle
 ```
 
-The Rust CLI starts with operational glue rather than a full sync rewrite:
-
-- `hive doctor` checks local project layout.
-- `hive sync doctor --endpoint <url>` checks `/v1/sync/state`.
-- `hive sync register --endpoint <url> --device-id <id>` registers a device.
-- `hive sync push-file --endpoint <url> --file request.json` pushes operations.
-- `hive sync pull --endpoint <url> --cursor 0` pulls operations.
-- `hive sync local-doctor --db-path <notes.db>` inspects local sync tables.
-- `hive sync run --db-path <notes.db> --endpoint <url> --device-id <id>` runs
-  one desktop sync cycle, or a bounded worker with retry/interval flags.
-- `hive sync token check|store` validates bearer/device mappings and manages
-  macOS Keychain token storage.
-- `hive sync conflicts review --db-path <notes.db>` reviews/export local
-  conflicts.
-- `hive sync notes review --db-path <notes.db>` reviews staged remote note
-  imports and can export generated Markdown inbox files.
-- `hive serve` runs the Rust `hive-sync-api` replacement; use `--store sqlite
-  --sqlite-path <path>` for local durable persistence.
-- `hive pwa check|build|dev|preview` runs the PWA package scripts.
-- `hive version --short` prints the CLI version.
-
-Longer-term, `hive` should absorb the legacy desktop sync client and possibly the
-sync API server. Keep MindWeaver `mw` focused on local Markdown workflows.
-
-## Current contents
-
-- `plan.md` — product boundary, current capabilities, and resume checklist.
-- `docs/architecture.md` — current architecture and migration path.
-- `docs/protocol.md` — sync operation wire contract.
-- `docs/release.md` — current build/install/release packaging path.
-- `docs/hive-sync-progress.md` — implementation status and next steps.
-- `docs/hive-sync-runbook.md` — operational runbook for the legacy sync stack.
-- `docs/hive-sync-cloud-deploy.md` — Cloud Run / Cloud SQL deployment notes.
-- `docs/hive-sync-mobile-onboarding.md` — PWA mobile setup and smoke checks.
-- `docs/hive-sync-monitoring.md` — monitoring setup notes.
-- `docs/hive-sync-backup-recovery.md` — backup/recovery notes.
-- `docs/hive-sync-token-rotation-checklist.md` — token rotation checklist.
-
-## Current implementation location
-
-The PWA has moved into this project at `hive-pwa/`. A copied Go oracle lives in
-`legacy/go-reference/` for parity checks. Some broader MindWeaver DB/client code
-still lives in MindWeaver until the desktop bridge is fully ported:
-
-- `legacy/go-reference/cmd/hiveSyncAPI`
-- `legacy/go-reference/internal/features/syncapi`
-- `legacy/go-reference/internal/features/syncclient`
-- `hive-pwa/`
-
-## Boundary
-
-MindWeaver `mw` owns local Markdown notes, todos, querying, projections, and TUI workflows.
-Hive owns optional remote operation sync, device auth, cloud API, mobile/PWA surfaces, and conflict transport.
-
-The intended long-term CLI entrypoint is `hive`, not top-level `mw sync`.
-
-## Development
-
-```bash
-cargo run -p hive -- doctor
-cargo run -p hive -- version --short
-cargo run -p hive -- serve --addr 127.0.0.1:8080 --device-tokens desktop=token --permissive-cors
-cargo run -p hive -- serve --addr 127.0.0.1:8080 --store sqlite --sqlite-path .local/hive-sync.db --device-tokens desktop=token --permissive-cors
-cargo run -p hive -- pwa check
-cargo run -p hive -- sync doctor --endpoint http://127.0.0.1:8080
-cargo run -p hive -- sync register --endpoint http://127.0.0.1:8080 --device-id desktop --token token
-cargo run -p hive -- sync pull --endpoint http://127.0.0.1:8080 --token token --cursor 0
-cargo run -p hive -- sync token check --endpoint http://127.0.0.1:8080 --device-id desktop --token token
-cargo run -p hive -- sync token store --device-id desktop --token-stdin
-cargo run -p hive -- sync local-doctor --db-path /path/to/notes.db
-cargo run -p hive -- sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token
-cargo run -p hive -- sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token --worker-iterations 3 --worker-interval 10s
-cargo run -p hive -- sync run --endpoint http://127.0.0.1:8080 --db-path /path/to/notes.db --device-id desktop --token token --until-empty
-cargo run -p hive -- sync notes review --db-path /path/to/notes.db --export-dir .local/remote-note-inbox --mark-reviewed
-cargo run -p hive -- sync conflicts review --db-path /path/to/notes.db --export-dir .local/conflict-reviews --artifacts-dir .local/conflicts
-```
-
-Sync client commands accept bearer tokens through `--token`, `HIVE_SYNC_TOKEN`,
-`--token-command '<shell command>'`, or macOS Keychain via
-`--token-from-keychain`. The Keychain default service is `mw/hive-sync`; the
-default account is the `--device-id` for commands that have one.
-
-Pulled remote note operations are deliberately staged in SQLite (`sync_note_imports`)
-and optional generated inbox files. Hive does not overwrite canonical Markdown
-notes automatically.
-
-Validate the Rust side with:
-
-```bash
-cargo fmt --all --check
-cargo check --workspace
-cargo test --workspace
-```
-
-Or use the convenience targets:
+## Build and install
 
 ```bash
 make validate
 make build
 make install        # installs to ~/.local/bin/hive by default
-make pwa-build
+```
+
+Without `make`:
+
+```bash
+cargo build --release -p hive
+install -m 0755 target/release/hive ~/.local/bin/hive
 ```
 
 See `docs/release.md` for the current release/package path.
+
+## Start a local sync API
+
+For local browser/PWA development:
+
+```bash
+hive serve \
+  --addr 127.0.0.1:8080 \
+  --device-tokens desktop=desktop-token,phone=phone-token \
+  --permissive-cors
+```
+
+For local durable smoke testing, use SQLite:
+
+```bash
+hive serve \
+  --addr 127.0.0.1:8080 \
+  --store sqlite \
+  --sqlite-path .local/hive-sync.db \
+  --device-tokens desktop=desktop-token,phone=phone-token \
+  --permissive-cors
+```
+
+Server endpoints:
+
+- `GET /healthz`
+- `GET /v1/sync/state`
+- `POST /v1/devices/register`
+- `POST /v1/sync/push`
+- `GET /v1/sync/pull?cursor=<cursor>&limit=<limit>`
+
+## Validate tokens and API health
+
+```bash
+hive sync token check \
+  --endpoint http://127.0.0.1:8080 \
+  --device-id desktop \
+  --token desktop-token
+
+hive sync doctor \
+  --endpoint http://127.0.0.1:8080 \
+  --device-id desktop \
+  --token desktop-token
+```
+
+Token sources supported by sync commands:
+
+- `--token <value>`
+- `HIVE_SYNC_TOKEN`
+- `--token-command '<command that prints token>'`
+- macOS Keychain via `--token-from-keychain`
+
+Store a token in macOS Keychain:
+
+```bash
+printf '%s' 'desktop-token' | hive sync token store \
+  --device-id desktop \
+  --token-stdin
+```
+
+## Run desktop sync
+
+`hive sync run` bridges a MindWeaver-compatible SQLite database to the Hive sync
+API. It reads pending `sync_outbox` rows, pushes them to the API, pulls remote
+operations by cursor, updates local sync state/entity versions, applies pulled
+todos to `sync_todos`, and stages pulled notes for manual review.
+
+```bash
+hive sync local-doctor --db-path /path/to/notes.db
+
+hive sync run \
+  --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token desktop-token
+```
+
+Run a bounded worker with retry/backoff:
+
+```bash
+hive sync run \
+  --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token desktop-token \
+  --worker-iterations 3 \
+  --worker-interval 10s \
+  --retry-attempts 4
+```
+
+Drain the currently pending local outbox:
+
+```bash
+hive sync run \
+  --endpoint http://127.0.0.1:8080 \
+  --db-path /path/to/notes.db \
+  --device-id desktop \
+  --token desktop-token \
+  --until-empty
+```
+
+## Review staged remote notes
+
+Hive does **not** overwrite canonical Markdown automatically. Pulled remote note
+operations are staged in `sync_note_imports` and can be exported to a generated
+inbox for manual review/import.
+
+```bash
+hive sync notes review --db-path /path/to/notes.db
+
+hive sync notes review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/remote-note-inbox \
+  --mark-reviewed
+```
+
+## Review conflicts
+
+```bash
+hive sync conflicts review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/conflict-reviews \
+  --artifacts-dir .local/conflicts
+
+hive sync conflicts review \
+  --db-path /path/to/notes.db \
+  --export-dir .local/conflict-reviews \
+  --mark-resolved
+```
+
+`--mark-resolved` requires an export destination so review state has an artifact.
+
+## Run the PWA
+
+```bash
+hive pwa check
+hive pwa dev
+```
+
+Open:
+
+- desktop browser: `http://localhost:5173`
+- phone on same LAN: `http://<machine-lan-ip>:5173`
+
+Use endpoint `http://127.0.0.1:8080` from the desktop browser, or
+`http://<machine-lan-ip>:8080` from a phone. Use device ID `phone` and its mapped
+token, for example `phone-token`.
+
+The PWA stores notes/todos/settings/queued sync operations in browser IndexedDB.
+Manual sync pushes queued phone edits and pulls remote operations.
+
+## Cloud and containers
+
+Build the local image when a Docker-compatible runtime is available:
+
+```bash
+make docker-build IMAGE=hive-sync-api:local
+```
+
+Cloud Run scripts live in `scripts/cloud/`. Current Rust `hive serve` supports:
+
+- `HIVE_STORE=memory` for smoke checks; not durable.
+- `HIVE_STORE=sqlite` for single-instance experiments; not a multi-instance
+  production backend without a persistent volume and backup strategy.
+
+Cloud SQL/Postgres support is documented as a future/deferred backend. See
+`docs/hive-sync-cloud-deploy.md` and `docs/hive-sync-backup-recovery.md` for the
+current operator guidance.
+
+## Safety boundaries
+
+- MindWeaver `mw` owns canonical local Markdown workflows.
+- Hive owns remote operation exchange, device auth, sync API, and PWA/mobile
+  surfaces.
+- Pulled todos are applied to `sync_todos`.
+- Pulled notes are staged for review and are not written to canonical Markdown
+  automatically.
+- SQLite/IndexedDB are projections and sync caches; Markdown remains the desktop
+  source of truth.
+
+## Documentation
+
+- `docs/architecture.md` — architecture and component boundaries
+- `docs/protocol.md` — sync API contract
+- `docs/hive-sync-runbook.md` — operational examples
+- `docs/hive-sync-mobile-onboarding.md` — PWA/mobile setup and smoke tests
+- `docs/hive-sync-cloud-deploy.md` — Cloud Run deployment notes
+- `docs/hive-sync-monitoring.md` — monitoring setup
+- `docs/hive-sync-backup-recovery.md` — backup caveats and future durable-store notes
+- `docs/hive-sync-token-rotation.md` — device bearer-token rotation procedure
+- `docs/release.md` — build/install/release packaging path
+- `legacy/go-reference/README.md` — Go oracle/reference notes

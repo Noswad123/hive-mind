@@ -23,7 +23,7 @@ Use this guide to:
 - Browser access allowed by Rust `hive serve --permissive-cors` for local dev, or
   by deployment CORS settings for cloud dev
 
-## Quick recovery checklist
+## Quick setup notes
 
 For your cloud deployment, collect:
 
@@ -219,7 +219,7 @@ manual/reviewed.
 5. Tap **Check Sync State**.
 6. Optionally create a local note and todo, then tap **Manual Sync**.
 
-## Install smoke test checklist
+## Install smoke test procedure
 
 Status in this repo session: **desktop automated PWA/API checks pass; physical
 device execution requires a phone/browser outside this terminal session**.

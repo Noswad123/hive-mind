@@ -1,10 +1,8 @@
-# Hive Sync Token Rotation Checklist
+# Hive Sync Token Rotation
 
-> Status: parked legacy Hive Sync notes. The Rust `mw` CLI no longer supports
-> top-level `mw sync`; local notes use `mw notes sync` / `mw seal`. Revisit these
-> commands only if Hive Sync returns under the future `hive` command boundary.
+> Status: active token rotation procedure for Rust `hive` sync/API deployments.
 
-Use this checklist whenever you rotate device bearer tokens.
+Use this procedure whenever you rotate device bearer tokens.
 
 ## Scope
 
@@ -70,8 +68,8 @@ PROJECT_ID="$PROJECT_ID" REGION="$REGION" scripts/cloud/deploy-hive-sync-api.sh
 ### macOS Keychain (recommended)
 
 ```bash
-printf '%s' "$NEW_WORK_TOKEN" | mw sync token store --token-stdin --device-id work
-printf '%s' "$NEW_PERSONAL_TOKEN" | mw sync token store --token-stdin --device-id personal
+printf '%s' "$NEW_WORK_TOKEN" | hive sync token store --token-stdin --device-id work
+printf '%s' "$NEW_PERSONAL_TOKEN" | hive sync token store --token-stdin --device-id personal
 ```
 
 ### Alternative: dynamic fetch (no local persistence)
@@ -83,7 +81,7 @@ Use `--token-command` against Secret Manager.
 On each machine:
 
 ```bash
-mw sync token check \
+hive sync token check \
   --endpoint "$SERVICE_URL" \
   --device-id "<device-id>" \
   --token-from-keychain
@@ -92,13 +90,13 @@ mw sync token check \
 Then run one sync cycle:
 
 ```bash
-mw sync --endpoint "$SERVICE_URL" --device-id "<device-id>" --token-from-keychain
+hive sync run --endpoint "$SERVICE_URL" --db-path /path/to/notes.db --device-id "<device-id>" --token-from-keychain
 ```
 
 ## 7) Post-rotation verification
 
 ```bash
-mw sync doctor --endpoint "$SERVICE_URL" --device-id "<device-id>" --token-from-keychain
+hive sync doctor --endpoint "$SERVICE_URL" --device-id "<device-id>" --token-from-keychain
 ```
 
 Check:

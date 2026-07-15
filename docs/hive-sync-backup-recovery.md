@@ -81,7 +81,7 @@ gcloud sql import sql hive-sync-pg \
   --project="$PROJECT_ID"
 ```
 
-## 4) Recovery checklist
+## 4) Recovery procedure
 
 1. Confirm target instance and database.
 2. Export a fresh pre-restore backup before importing.

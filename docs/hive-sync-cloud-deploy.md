@@ -75,7 +75,7 @@ printf '%s' "desktop=<real-token>,phone=<real-token>" \
 
 For full rotation procedure, see:
 
-- `docs/hive-sync-token-rotation-checklist.md`
+- `docs/hive-sync-token-rotation.md`
 
 ### Verify token mapping (read-only)
 
