@@ -5,3 +5,6 @@
 .DS_Store
 .env
 *.log
+
+# Downloaded local Google OAuth client configuration (never commit credentials).
+/client_secret*.json

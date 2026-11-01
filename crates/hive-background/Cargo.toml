@@ -1,0 +1,24 @@
+[package]
+name = "hive-background"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+getrandom.workspace = true
+hive-capture = { path = "../hive-capture" }
+hive-google-auth = { path = "../hive-google-auth" }
+libc.workspace = true
+rmpv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+signal-hook.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+
+[build-dependencies]
+cc = "1.2.66"

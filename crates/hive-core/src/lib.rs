@@ -3,6 +3,9 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub mod google_identity;
+pub use google_identity::GoogleIdentity;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_PWA_DIR: &str = "hive-pwa";
 

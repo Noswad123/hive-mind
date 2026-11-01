@@ -2,6 +2,9 @@
 members = [
   "crates/hive",
   "crates/hive-core",
+  "crates/hive-capture",
+  "crates/hive-google-auth",
+  "crates/hive-background",
   "crates/hive-desktop",
   "crates/hive-server",
 ]
@@ -15,14 +18,22 @@ authors = ["Jamal Dawson"]
 
 [workspace.dependencies]
 anyhow = "1.0"
+base64 = "0.22"
 axum = "0.8"
 clap = { version = "4.5", features = ["derive", "env"] }
+libc = "0.2"
+getrandom = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rmpv = { version = "1.3", features = ["with-serde"] }
+signal-hook = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
+subtle = "2.6"
 tempfile = "3.23"
 thiserror = "2.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower-http = { version = "0.6", features = ["cors"] }
+zeroize = "1.8"

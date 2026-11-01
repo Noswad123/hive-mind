@@ -9,8 +9,17 @@ authors.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 hive-core = { path = "../hive-core" }
+hive-capture = { path = "../hive-capture" }
+hive-google-auth = { path = "../hive-google-auth" }
+hive-background = { path = "../hive-background" }
+libc.workspace = true
+sha2.workspace = true
 hive-desktop = { path = "../hive-desktop" }
 hive-server = { path = "../hive-server" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rusqlite.workspace = true

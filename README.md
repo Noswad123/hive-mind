@@ -12,6 +12,9 @@ Hive Mind is the sync/API/mobile companion project for MindWeaver.
 ```text
 hive-mind/
   crates/hive          CLI entrypoint: `hive`
+  crates/hive-capture  desktop-local Google Tasks inbound queue and mw delivery
+  crates/hive-background bounded worker, editor coordination, and owned macOS LaunchAgent
+  crates/hive-google-auth desktop Google OAuth, refresh, and native macOS Keychain storage
   crates/hive-core     shared protocol/client/diagnostic types
   crates/hive-desktop  desktop SQLite bridge for MindWeaver sync tables
   crates/hive-server   Rust sync API server used by `hive serve`
@@ -37,6 +40,59 @@ install -m 0755 target/release/hive ~/.local/bin/hive
 ```
 
 See `docs/release.md` for the current release/package path.
+
+## Google Tasks inbound capture (first personal slice)
+
+The desktop-local `hive captures` lane and bounded background worker are implemented
+and validated: on manual invocation or an explicitly activated worker cycle, read a
+complete Google Tasks list → private dedicated SQLite queue → existing `mw todos add`
+with stable capture ID → durable canonical receipt. Google retains phone captures
+while the desktop is off; Hive does not acknowledge them until it runs.
+
+See [Google Tasks capture](docs/google-tasks-capture.md) for commands, bootstrap
+choices, unknown-outcome recovery, validation evidence, and activation gates.
+Desktop OAuth login, account-bound refresh, and native macOS Keychain storage are
+implemented; see [Google sign-in setup](docs/google-auth.md). Manual live capture
+from the dedicated Android Google Tasks list into Markdown is verified, including
+a repeat run with no duplicate or source rewrite. The stable release was built and
+installed at `/Users/jdawson/.local/bin/hive` on 2026-10-31 and rebuilt/installed
+there after the 2026-11-01 inventory fixes. On 2026-11-01 the user reconfirmed
+latest-binary foreground `auth status` and `lists --connection personal` success.
+The existing personal queue/list/baseline is configured with fixed public routing,
+MindWeaver cwd, interval 60 seconds, timeout 45 seconds, and limit 1; configuration
+and queue scope checks passed. The clean/idle live editor was hotloaded in place,
+preserving `mw_ops` module/active-guard identity, and the bridge registered.
+**Scheduled polling is enabled and verified:** two controlled `run-once` cycles
+completed in about 0.5 seconds each, followed by explicit background install/start.
+The owned LaunchAgent reports `serviceActive: true`, `serviceState: loaded_owned`;
+its startup and next scheduled cycle completed about 60.7 seconds apart. Each of
+these four cycles observed one unchanged task, staged/delivered zero, and required
+no auth action (controlled cycles: generation 1). Latest-build no-UI Keychain access
+is positively proven while unlocked, not for denial/locked scenarios. Earlier
+45-second unknown outcome and 12-second local status stall did not reproduce;
+their root cause is not established and no speculative source fix was made.
+Editor readiness is `ready: true`, `noEditor: false`; a live unsaved hidden-buffer
+probe verified `dirty_buffers` readiness deferral, then clean readiness was restored
+without note edits or guard changes. The existing receipt remains at attempt 1,
+with no duplicates or Inbox/dashboard hash, byte, or mtime changes.
+New phone-task-to-background-source-write delivery, full pending-job dirty-buffer
+delivery deferral, and live computer-off catch-up are not yet live-verified.
+Source-write/guarded delivery has isolated integration and earlier manual capture
+proof only. Polling runs in the GUI user session; Google holds work while the
+computer is off, with no server required. See the runbook for stable-path
+`background status`, `stop`, `start`, and `uninstall` controls; stop retains config
+and queue, and uninstall removes only the owned plist while retaining all state.
+Latest validation: 270 normal workspace tests passed (five ignored), strict
+background/auth/capture Clippy passed, and both ignored real-Neovim tests passed
+after the fixes. Real-writer integrations passed earlier, not rerun after the
+fixes; earlier format and Neovim background/safety checks (32/54 tests) also passed.
+No additional tests ran during activation; these isolated checks are separate from
+the live scheduled-polling proof.
+`lists`/`poll`/`run` now require exactly one explicit `--connection NAME` or
+`--access-token-env HIVE_GOOGLE_ACCESS_TOKEN`; saved connections forbid `--account-key`.
+Calendar, export, completion writeback, lifelog, and PWA migration remain pending.
+This lane does not use or change legacy LWW sync/PWA transport and
+does not require a hosted server or Postgres before first personal use.
 
 ## Start a local sync API
 
@@ -219,6 +275,8 @@ current operator guidance.
 
 ## Documentation
 
+- `docs/google-tasks-capture.md` — implemented local inbound lane and live activation gates
+- `docs/google-auth.md` — Desktop OAuth setup, saved connections, refresh, and troubleshooting
 - `docs/architecture.md` — architecture and component boundaries
 - `docs/product-architecture-roadmap.md` — product architecture needed for real
   multi-device note/todo sync and future MindWeaver integration

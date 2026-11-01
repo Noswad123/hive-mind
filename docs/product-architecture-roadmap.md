@@ -6,6 +6,16 @@ view/edit notes and todos safely.
 
 ## Product goal
 
+**First personal vertical slice:** the desktop-local Google Tasks inbound
+foundation is implemented, not live-activated. Start with the
+implemented [Desktop OAuth setup](google-auth.md) (next input: private client JSON
+path only), then the
+[capture runbook and activation gates](google-tasks-capture.md): Google retains
+phone tasks while the desktop is off; user-invoked Hive polling stages a private
+queue and delegates canonical Inbox creation to `mw`. This does not require a
+Postgres rewrite, hosted transport, or PWA migration. The broader bidirectional
+sync architecture below remains future work; it is not a gate for this narrow lane.
+
 Hive Mind should let a user:
 
 1. keep MindWeaver Markdown notes as their trusted desktop source of truth,
@@ -335,6 +345,10 @@ trustworthy.
 ## Resume here later
 
 When returning to this work, start with:
+
+For the immediate personal workflow, first follow the
+[Google Tasks activation gates](google-tasks-capture.md#example-usage), not a new
+local MindWeaver cutover. The following steps concern broader hosted sync:
 
 1. implement the Postgres `hive-server` backend,
 2. add server migrations and backup/restore validation,

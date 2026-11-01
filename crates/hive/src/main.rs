@@ -5,6 +5,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hive_core::{DoctorStatus, ProjectLayout};
 use serde::Serialize;
 
+mod captures_auth;
+mod captures_background;
+use captures_auth::{CaptureAuthCommand, GoogleCredentialArgs, ResolvedGoogleClient};
+
 const DEFAULT_TOKEN_KEYCHAIN_SERVICE: &str = "mw/hive-sync";
 
 #[derive(Debug, Parser)]
@@ -20,6 +24,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Inbound Google Tasks capture, separate from legacy todo synchronization.
+    Captures {
+        #[command(subcommand)]
+        command: CapturesCommand,
+    },
     /// Print Hive CLI version.
     Version {
         /// Print only the version number.
@@ -63,6 +72,248 @@ enum Commands {
         #[arg(long, env = "HIVE_SYNC_PERMISSIVE_CORS")]
         permissive_cors: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum CapturesCommand {
+    /// Saved per-user capture scheduling and editor-aware delivery.
+    Background {
+        #[command(subcommand)]
+        command: captures_background::BackgroundCommand,
+    },
+    /// Explicit Google browser login and local credential management.
+    Auth {
+        #[command(subcommand)]
+        command: CaptureAuthCommand,
+    },
+    /// List Google task lists; read-only, no queue database or Markdown writes.
+    Lists {
+        #[command(flatten)]
+        credentials: GoogleCredentialArgs,
+    },
+    /// Fetch a complete Google list and stage observations in a dedicated Hive queue.
+    Poll {
+        #[command(flatten)]
+        connection: CaptureConnectionArgs,
+        #[command(flatten)]
+        credentials: GoogleCredentialArgs,
+    },
+    /// Deliver pending captures through mw; does not poll Google or retry unknown outcomes.
+    Deliver {
+        #[arg(long)]
+        db_path: PathBuf,
+        /// Absolute path to the trusted MindWeaver executable.
+        #[arg(long)]
+        mw_bin: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Run one Google poll followed by bounded local delivery. No background service is installed.
+    Run {
+        #[command(flatten)]
+        connection: CaptureConnectionArgs,
+        #[command(flatten)]
+        credentials: GoogleCredentialArgs,
+        #[arg(long)]
+        mw_bin: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Read a dedicated queue without creating it or changing delivery state.
+    Status {
+        #[arg(long)]
+        db_path: PathBuf,
+    },
+    /// Explicitly recover an identified capture queue, without invoking mw or Google.
+    RecoverStore {
+        #[arg(long)]
+        db_path: PathBuf,
+    },
+    /// Resolve an interrupted capture by observing its existing stable ID; never recaptures.
+    Reconcile {
+        #[arg(long)]
+        db_path: PathBuf,
+        #[arg(long)]
+        mw_bin: PathBuf,
+        #[arg(long)]
+        capture_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct CaptureConnectionArgs {
+    /// Dedicated Hive capture SQLite file; never use the MindWeaver notes database.
+    #[arg(long)]
+    db_path: PathBuf,
+    /// Operator namespace for explicit token-env mode only; saved connections derive identity.
+    #[arg(long, requires = "access_token_env", conflicts_with = "connection")]
+    account_key: Option<String>,
+    #[arg(long)]
+    list_id: String,
+    /// Explicit first-scan policy: baseline existing items, or capture eligible open items.
+    #[arg(long, value_enum)]
+    bootstrap: CaptureBootstrap,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CaptureBootstrap {
+    Baseline,
+    ImportOpen,
+}
+
+fn collect_google_captures(
+    connection: &CaptureConnectionArgs,
+    resolved: &ResolvedGoogleClient,
+) -> Result<(
+    hive_capture::store::CaptureStore,
+    hive_capture::IngestReport,
+)> {
+    use hive_capture::{BootstrapPolicy, store::CaptureStore};
+    // Authentication and namespace validation precede this complete provider snapshot.
+    let tasks = resolved.client.list_tasks(&connection.list_id)?;
+    let mut store = CaptureStore::open(&connection.db_path)?;
+    let policy = match connection.bootstrap {
+        CaptureBootstrap::Baseline => BootstrapPolicy::Baseline,
+        CaptureBootstrap::ImportOpen => BootstrapPolicy::ImportOpen,
+    };
+    let report = if let Some(identity) = &resolved.identity {
+        store.ingest_verified(identity, &connection.list_id, &tasks, policy)?
+    } else {
+        store.ingest(
+            connection
+                .account_key
+                .as_deref()
+                .context("token-env capture requires --account-key")?,
+            &connection.list_id,
+            &tasks,
+            policy,
+        )?
+    };
+    Ok((store, report))
+}
+
+fn capture_delivery_result(report: &hive_capture::DeliveryReport) -> Result<()> {
+    if report.blocked > 0 {
+        bail!(
+            "capture delivery requires review; inspect the queue and explicitly reconcile unknown outcomes"
+        );
+    }
+    if report.calendar_pending > 0 {
+        bail!(
+            "dated tasks are retained as calendar_pending; Calendar routing is not implemented in this slice"
+        );
+    }
+    Ok(())
+}
+
+fn captures_command(command: CapturesCommand) -> Result<()> {
+    use hive_capture::{mindweaver::MindWeaver, store::CaptureStore};
+    match command {
+        CapturesCommand::Background { command } => captures_background::command(command)?,
+        CapturesCommand::Auth { command } => captures_auth::auth_command(command)?,
+        CapturesCommand::Lists { credentials } => {
+            let lists = credentials.resolve_for_list()?.client.list_task_lists()?;
+            let items: Vec<_> = lists
+                .into_iter()
+                .map(|list| serde_json::json!({"id":list.id,"title":list.title}))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"google-task-lists","items":items})
+                )?
+            );
+        }
+        CapturesCommand::Poll {
+            connection,
+            credentials,
+        } => {
+            let resolved = credentials.resolve_for_capture(connection.account_key.as_deref())?;
+            let (_, report) = collect_google_captures(&connection, &resolved)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"capture-poll-result","report":report})
+                )?
+            );
+        }
+        CapturesCommand::Status { db_path } => {
+            let jobs = CaptureStore::inspect(db_path)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"capture-queue-status","items":jobs})
+                )?
+            );
+        }
+        CapturesCommand::RecoverStore { db_path } => {
+            let store = CaptureStore::open_existing(db_path)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"capture-store-recovery","items":store.jobs()?})
+                )?
+            );
+        }
+        CapturesCommand::Deliver {
+            db_path,
+            mw_bin,
+            limit,
+        } => {
+            if !(1..=1000).contains(&limit) {
+                bail!("delivery limit must be 1..1000");
+            }
+            let mut store = CaptureStore::open_existing(db_path)?;
+            let mw = MindWeaver::new(mw_bin)?;
+            let report = mw.deliver_pending(&mut store, limit)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"capture-delivery-result","report":report})
+                )?
+            );
+            capture_delivery_result(&report)?;
+        }
+        CapturesCommand::Run {
+            connection,
+            credentials,
+            mw_bin,
+            limit,
+        } => {
+            if !(1..=1000).contains(&limit) {
+                bail!("delivery limit must be 1..1000");
+            }
+            let resolved = credentials.resolve_for_capture(connection.account_key.as_deref())?;
+            let mw = MindWeaver::new(mw_bin)?;
+            mw.binding()?; // Verify the local destination before collecting provider data.
+            let (mut store, collected) = collect_google_captures(&connection, &resolved)?;
+            let delivered = mw.deliver_pending(&mut store, limit)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"capture-cycle-result","collected":collected,"delivery":delivered})
+                )?
+            );
+            capture_delivery_result(&delivered)?;
+        }
+        CapturesCommand::Reconcile {
+            db_path,
+            mw_bin,
+            capture_id,
+        } => {
+            let mut store = CaptureStore::open_existing(db_path)?;
+            let mw = MindWeaver::new(mw_bin)?;
+            let report = mw.reconcile(&mut store, &capture_id)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schemaVersion":"1","kind":"capture-reconciliation-result","report":report})
+                )?
+            );
+            capture_delivery_result(&report)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -416,6 +667,11 @@ async fn main() -> Result<()> {
         root: None,
     }) {
         Commands::Version { short } => version_command(short),
+        Commands::Captures { command } => {
+            tokio::task::spawn_blocking(move || captures_command(command))
+                .await
+                .context("capture worker failed")?
+        }
         Commands::Doctor { json, root } => doctor_command(json, root),
         Commands::Sync { command } => sync_command(command).await,
         Commands::Pwa { command } => pwa_command(command),
