@@ -1,6 +1,6 @@
 # Hive Mind Status and Roadmap
 
-Last updated: 2026-11-01
+Last updated: 2026-11-02
 
 Hive Mind is the optional sync/API/PWA companion for MindWeaver. MindWeaver keeps
 canonical local Markdown workflows; Hive exchanges operations between devices and
@@ -17,10 +17,10 @@ offers mobile/web companion surfaces.
 
 ## Implemented capabilities
 
-### Google Tasks inbound capture: scheduled polling enabled and verified
+### Google Tasks inbound capture: scheduled phone-to-editor delivery live-verified
 
 `hive-capture` and `hive captures` now provide the first personal vertical slice:
-user-invoked full paginated read-only Google snapshot → dedicated private SQLite
+Manual or scheduled full paginated read-only Google snapshot → dedicated private SQLite
 queue → existing `mw todos add` with stable ID → durable canonical receipt.
 Google holds phone captures while the desktop is off; there is no Hive/server ACK
 then. Legacy LWW sync remains unchanged and unused for this lane.
@@ -34,7 +34,7 @@ legacy baselines; explicit legacy-binding migration is future work, not automati
 
 See [Google sign-in setup](docs/google-auth.md) for connection/security details and
 [the capture runbook](docs/google-tasks-capture.md) for bootstrap/reconciliation.
-Latest validation after the inventory fixes: 270 normal workspace tests passed,
+At the inbound inventory-fix checkpoint, 270 normal workspace tests passed,
 five ignored by default; strict all-targets Clippy passed for background/auth/capture.
 Both ignored real isolated Neovim tests passed after the fixes. Both real-writer
 integrations (real mw CLI; fake Google with real Hive/mw) passed earlier and were
@@ -82,28 +82,196 @@ The guard remained unchanged with `busy: false`; after changed-tick, name, and
 visibility checks the probe was removed and clean readiness restored. This proves
 readiness deferral, not live full pending-job dirty-buffer delivery deferral.
 
-Two controlled `run-once` cycles completed in about 0.5 seconds each, observing
+At the earlier polling checkpoint, two controlled `run-once` cycles completed in about 0.5 seconds each, observing
 one unchanged task, staging/delivering zero, with `authActionRequired: false` and
 generation 1. Explicit background install/start then enabled the owned LaunchAgent:
 `serviceActive: true`, `serviceState: loaded_owned`. Its actual startup and next
 scheduled cycle completed about 60.7 seconds apart, each with no pending work,
 one unchanged observation, zero staged/delivered, and no auth action required.
 Native LaunchAgent ownership/status parsing and scheduled polling are live-verified.
-Inbox/dashboard hashes, bytes, and mtimes remain unchanged; the receipt is still
+At that checkpoint Inbox/dashboard hashes, bytes, and mtimes were unchanged; the receipt was still
 attempt 1 with no duplicates. Earlier 45-second `unknown_outcome` and 12-second
 local status stall did not reproduce; bounded inherited/minimal-environment local
 status diagnostics succeeded in 0.054/0.028 seconds. The credential-operation
 failure is resolved operationally, not root-caused; the same build/credentials work
 and no speculative source fix was made. No additional tests ran during activation.
 
+On 2026-11-01, the user added `Verify scheduled phone capture` on the phone, undated
+and title-only. An automatic scheduled cycle, not manual `run-once`, completed with
+observed 2, staged 1, unchanged 1, delivered 1, pending 0. The new durable
+`todos-add` receipt has one attempt, `alreadyCaptured: false`, `done: false`,
+`projectionUpdated: true`, and `sourcePath: introspection/inbox.md`, Todo / Inbox,
+line 12; its `sourceRevision` matches the actual Inbox hash. Actual Markdown and a
+recursive whole-notes-root search confirm exactly one unchecked stable-marker entry.
+The same-cycle native Neovim bridge reached `phase: done`, delivered 1,
+`writerExited: true`, conflicts 0; afterward `busy: false`, mode `n`, no dirty buffers.
+The next actual scheduled cycle observed 2, unchanged 2, staged/delivered 0,
+`no_pending`, `authActionRequired: false`, with the owned service still active.
+Both captures retain one attempt and their receipts. Inbox (324 bytes) and dashboard
+(4,651 bytes) bytes/sizes/mtimes were unchanged from post-delivery to follow-up;
+dashboard content retained its earlier hash, although its mtime changed on delivery.
+No Google/source completion or archival was performed. This is live scheduled
+writer and repeat-nonduplication proof, not a new automated test result.
+
 Polling is running in the GUI user session at 60 seconds, with a 45-second timeout
 and limit 1. Google holds work while the computer is off; no server is required.
 Use stable-path `background status`, `stop`, `start`, and `uninstall` controls.
 Stop retains config/queue; uninstall removes only the owned plist and retains all
-state. New phone-task-to-background-source-write delivery and live computer-off
-catch-up remain unverified; source-write/guarded delivery has isolated integration
-and earlier manual capture proof only. Calendar, export/completion writeback,
+state. Live computer-off catch-up and full pending-job dirty-buffer delivery deferral
+remain unverified; read-only dirty readiness is already proven. Calendar publication, export/completion writeback,
 lifelog, and PWA migration remain pending.
+
+### Accepted next slice: hosted Calendar publication
+
+The user selected GitHub-hosted Linux Actions after notes pushes, with a small
+Git-backed publication ledger on a separate state branch and no paid infrastructure
+initially. The private notes repository uses `main`, Actions is enabled, and no
+existing publication workflow was found. This is a selected architecture, not a
+deployed capability. See the [publication contract](docs/product-architecture-roadmap.md#accepted-next-slice-hosted-calendar-publication-after-push).
+
+**Local source-only preview retained:** `hive-calendar` plus
+`./target/debug/hive calendar preview --repo /ABS/local/notes --commit FULL_LOWER_SHA --mw-bin /ABS/trusted/mw`.
+This reads bounded committed regular Markdown through a private hashed copy of the
+existing read-only MW snapshot parser, not a DB or mutable working tree. Due-only
+all-day Available previews expose invalid dates and unresolved identities;
+`publicationReady` is always false even with stable IDs. The prior source-preview
+checkpoint remains recorded separately.
+
+**Local ledger-relative planner implemented:** built-debug `hive calendar plan`
+requires independently supplied source/account/concrete-calendar bindings and either
+explicit observation-only bootstrap or all three committed-ledger inputs. Strict
+V1 JSON maps logical UUIDs to exact source acknowledgements and optional provider,
+pending, and retirement evidence. Source HTML markers are optional; no UUIDs or
+enrollment are assigned. Missing/bad existing state fails, never bootstraps.
+Decisions are `noop`/advisory `update`/`review`/`blocked`/`retired`, not create/delete.
+No remote or latest-ledger-head verification occurs; publication is always disabled
+and a future executor must compare-and-swap the ledger. Any edit in the source file
+or move requires review/new explicit acknowledgement under the same logical ID;
+different parser binary builds/platforms also require review/re-acknowledgement.
+Candidate generation and reviewed local persistence are now implemented; integration
+activation and normal-user UI remain needed so users do not maintain IDs/JSON by hand. No
+title/fuzzy/comment-only matching or friction-free continuity is claimed.
+See [practical usage](README.md#calendar-publication-plan-local-only),
+[schema contract](docs/product-architecture-roadmap.md#calendar-ledger-schema-v1),
+and [historical plan evidence](docs/release.md#calendar-plan-checkpoint-2026-11-02).
+
+**Local candidate-generation milestone DONE:** built-debug, not installed,
+`./target/debug/hive calendar enroll` / `reack` emit validated whole-ledger JSON
+candidates only. All source/binding/ledger flags and exact relative Markdown path /
+positive one-based line selection are required. Enrollment assigns OS-entropy
+UUIDv4 without markers or note edits; initialization requires explicit
+`--initialize-ledger` plus proof of path absence at the full ledger base commit,
+not authoritative HEAD or remote absence. Normal missing state never initializes.
+Duplicates/reservations including retired evidence refuse. Enrollment's global
+guard requires all old bases recognized, including retired, and no pending work:
+missing/moved/edited retired source can block unrelated enrollment until a future
+resolution workflow. No force override or friction-free restore is promised.
+
+Reack explicitly maps either an old path/line or advanced existing logical ID to
+the new path/line, retaining UUID/provider ACK/lifecycle and unselected evidence.
+Entire old proof is validated before replacement; pending/retired targets refuse.
+Parser-change acceptance is selected-entry approval, not old-semantic proof.
+Done/genuinely undated ACKs are allowed, not completion/deletion propagation;
+malformed/duplicate due evidence refuses even for done tasks. Output is fully
+serialized before stdout and remains not publication-ready, remotely verified,
+or ledger-head verified; CAS is required. Candidate generation persists nothing, so
+enrollment IDs can differ on rerun. Never dispatch from an unpersisted candidate.
+
+At the candidate-only checkpoint, the approval/apply writer and persistence were
+next work; the local implementation is now delivered below. Real-repository apply
+is still not activated or approved by these docs. See
+[candidate commands](README.md#calendar-ledger-candidates-local-only) and
+[macOS candidate evidence](docs/release.md#calendar-candidate-checkpoint-2026-11-02):
+363 normal workspace tests passed, ten ignored; Calendar 82 normal/two ignored;
+CLI candidates four normal/one ignored. All four explicit real-MW gates passed;
+strict Calendar all-targets Clippy, fmt/build passed; no local candidate P1/P2
+remained. These are supplied implementation results, not rerun for this docs edit.
+
+**Local persistence code/test milestone DONE; integration activation not done:**
+built-debug `calendar verify-candidate` is read-only, computing blob/tree/commit
+OIDs; `calendar apply` explicitly writes local Git objects and performs one fixed
+state-ref HEAD CAS. Both require explicit source/MW, independent bindings, absolute
+bare ledger repository, relative JSON path, `refs/heads/hive-calendar-state`, absolute
+regular candidate, and independently approved exact-byte SHA-256. `--create-ref` is
+initialization-only; selected old-parser reack migration requires renewed independent
+`--accept-parser-change`. The 8 MiB single capture rejects symlinks via `O_NOFOLLOW`
+and unknown/duplicate/trailing JSON. Approval is not a signature/provider proof.
+Original ledger/history is validated before semantic replay and whole-candidate
+equality; a digest is not authority for arbitrary replacement. Approved UUIDs persist
+unchanged as canonical compact ledger JSON.
+
+V1 only accepts a dedicated bare files-backend repository without linked worktrees,
+not a notes worktree. Updates require a strict owned tool-shaped receipt bound to
+ref/path/binding/blob, matching old blob, and whole-commit base HEAD equality; this
+is not cryptographic signer proof. Foreign tips, symbolic/dangling refs, and object
+indirection refuse. Init CAS requires ref absence against zero, not merely path
+absence; the sole-parent commit inherits the whole seed tree, possibly notes, not
+an orphan branch. No adopt/reset/force/push. Raw-tree plumbing preserves unrelated
+modes/OIDs, without checkout/index/config edits/hooks/signing/maintenance. Fixed
+identity and UTC parent-committer-time + 1 second make verify/apply OIDs identical.
+
+Verify statuses are `verified`/`already_applied`; apply statuses are
+`applied`/`already_applied`. Only successful CAS sets `localRefUpdated: true`;
+publication/remote/remote-ref verification remain false. Exact expected-tip retry
+writes nothing; advanced-tip retry refuses, with no rewind/content-only acceptance.
+Root cancellation covers capture through replay/writer/CAS; pre-CAS cancellation
+stops advancement, while post-dispatch cancellation/lost response may mean success
+and requires exact retry, never rollback. Failed writes may leave unreachable
+objects; no automatic GC. Recovery needs the same approved candidate, destination,
+bindings, source commit, pinned parser artifact, and permission flags.
+
+**Operator MUST exclusively administer the state repository during each operation.**
+Preflight does not atomically exclude worktree/config administration races; CAS
+handles ledger writers, not admins. Focused review closed the lost-cancellation P2:
+ready for local persistence under that assumption, not general deployment.
+Latest supplied macOS results after the root-cancellation fix: 389 normal workspace
+tests passed/12 ignored; Calendar 105 normal/3 ignored; CLI apply 3 normal/1 ignored.
+The real-MW apply fixture and four earlier gates rerun all passed (five gates).
+Strict Calendar all-targets Clippy, fmt/build passed; the main CLI's four original
+legacy warnings are unchanged. No tests/builds were rerun for these docs.
+See [review-first usage](README.md#calendar-local-persistence) and
+[persistence evidence](docs/release.md#calendar-local-persistence-checkpoint-2026-11-02).
+All actual Git writes were confined to temporary bare test repositories: no actual
+notes/source/ref changes, new real state repo, installed binary/worker, auth/grant,
+provider, remote, workflow, credentials, or billing changes. No remote sync or Calendar writes.
+
+Delivery gates:
+
+- [x] Confirm notes repository host, visibility, default branch, and Actions availability.
+- [x] Record committed-source, ledger, recovery, credential, and cost boundaries.
+- [x] Scope v1 to the existing due date only; no start-date requirement. Preview an
+      all-day Available deadline reminder. Defer start time, duration, timezone/DST,
+      and bidirectional Calendar synchronization; preserve identity across future
+      all-day/timed representation changes.
+- [x] Define explicit ledger logical identity independent of source markers and dates.
+- [x] Implement local enrollment/re-acknowledgement candidate generation, preserving
+      logical IDs across explicit edits/moves without source markers or silent matching.
+- [x] Implement reviewed local enrollment persistence; retain the approved UUID.
+- [ ] Deliver normal-user approval/UI and integration activation; candidate JSON
+      alone is not durable enrollment and hand-maintained IDs/JSON are not the workflow.
+- [x] Implement the narrow credential-free source-only due-date preview over a full
+      pinned Git commit, with visible identity/enrollment blockers and no publication.
+- [x] Implement strict committed-ledger schema and advisory planning, including bad/
+      missing-state refusal, ancestry, source changes/moves, pending retry blocks,
+      retirement, markerless evidence, and byte-exact LF/CRLF acknowledgements.
+- [x] Implement reviewed approval/apply semantic replay, dedicated bare state-ref
+      whole-HEAD and path/blob-or-absence CAS, and exact-retry/cancellation recovery.
+      Local code/test milestone only, under exclusive repository administration.
+- [ ] Design durable provider intents/results and ambiguous-outcome reconciliation;
+      a remote API operation and Git persistence are not one transaction.
+- [ ] Implement hosted CI serialization and remote lease/CAS push; local CAS is not
+      remote-ref proof, remote synchronization, or authorization to deploy.
+- [ ] Package a pinned Linux artifact and validate its runtime later before deployment.
+      Linux is untested and explicitly deferred by the user, not a local-work blocker;
+      do not repeat Docker checks or install targets now.
+- [ ] Verify the account's included usage and paid-overage blocking before activation.
+- [ ] Obtain Calendar OAuth write authorization and explicit approval for hosted
+      secrets, source-branch/workflow deployment, Calendar writes, and state-branch
+      creation in real repositories. Only temporary fixture Git writes have occurred;
+      no real source/state commits, pushes, secret changes, or billing changes.
+- [ ] Implement the Calendar executor and hosted workflow after the above gates.
+      Keep private source/ledger/output out of logs and automatic CI artifact uploads,
+      including Atlassian; the user explicitly declined Atlassian uploads.
 
 ### CLI and server
 
@@ -167,10 +335,9 @@ lifelog, and PWA migration remain pending.
 For the full product architecture and phased roadmap toward real multi-device
 note/todo sync, see `docs/product-architecture-roadmap.md`.
 
-1. Retain enabled, verified [scheduled polling](docs/google-tasks-capture.md) and
-   the existing connection, queue, baseline, and receipts. Separately verify a new
-   phone task reaching Markdown through background delivery, full pending-job
-   dirty-buffer deferral, and live computer-off catch-up. No Postgres prerequisite.
+1. Retain live-verified [scheduled phone-to-editor delivery and repeat nonduplication](docs/google-tasks-capture.md)
+   and the existing connection, queue, baseline, and receipts. Separately verify full
+   pending-job dirty-buffer deferral and live computer-off catch-up. No Postgres prerequisite.
 2. For broader hosted sync, add a cloud-suitable durable backend, likely Postgres/Cloud SQL.
 3. Improve reviewed remote-note import UX from generated inbox into canonical
    Markdown workflows.

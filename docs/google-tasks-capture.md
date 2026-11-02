@@ -2,7 +2,8 @@
 
 ## Overview
 
-**Manual capture live-verified; scheduled background polling enabled and verified.**
+**New scheduled phone-to-editor-owned writer delivery and repeat nonduplication
+live-verified (2026-11-01); scheduled polling remains enabled.**
 `hive-capture`, `hive-background`, and `hive captures` provide an inbound-only path
 from Google Tasks to the canonical MindWeaver Markdown Inbox. Google retains phone
 captures while the computer is off. On manual invocation or an explicitly activated
@@ -15,11 +16,11 @@ There is no always-on Hive service or Hive/server acknowledgement while the
 desktop is off, hosted transport, automatic background installation, PWA migration,
 Calendar adapter, export, or completion writeback in this lane. Legacy LWW sync is
 unchanged and unused here. The `personal` connection and dedicated Google Tasks
-list are connected, with one live Android-to-Markdown capture verified. Hive
+list are connected, with earlier manual and new scheduled Android-to-Markdown captures verified. Hive
 was built in release mode and installed at `/Users/jdawson/.local/bin/hive` on
 2026-10-31, then rebuilt and installed at the same stable path after the inventory
-fixes on 2026-11-01. New phone-task-to-background-source-write delivery and live
-computer-off catch-up remain unverified; completed polling is not new-write proof.
+fixes on 2026-11-01. Live computer-off catch-up and full pending-job dirty-buffer
+delivery deferral remain unverified; read-only dirty readiness is already proven.
 
 Desktop OAuth login, refresh, verified account binding, and native macOS Keychain
 storage are now implemented. Start with [Google sign-in setup](google-auth.md);
@@ -36,13 +37,13 @@ hotloaded in place, preserving module identity and the active upvalue guard acro
 four shared references; bridge setup registered the editor. This was a controlled
 live update, not a recommendation to replace a running module or discard its guard.
 
-**Enabled:** two controlled `run-once` cycles completed in about 0.5 seconds each,
+**Earlier polling checkpoint:** two controlled `run-once` cycles completed in about 0.5 seconds each,
 followed by explicit background install/start. The owned LaunchAgent reports
 `serviceActive: true`, `serviceState: loaded_owned`; actual startup and next
 scheduled cycles completed about 60.7 seconds apart. All four cycles observed one
 unchanged task and staged/delivered zero, with no auth action required (controlled
 cycles: generation 1). Native LaunchAgent ownership/status parsing is live-verified.
-Inbox/dashboard hashes, bytes, and mtimes remain unchanged; the receipt is still
+At that checkpoint Inbox/dashboard hashes, bytes, and mtimes were unchanged; the receipt was still
 attempt 1 with no duplicates. Editor readiness is `ready: true`, `noEditor: false`;
 live dirty-buffer readiness deferral and restored clean readiness are also verified.
 See the activation evidence below for the exact boundary and controls.
@@ -131,8 +132,8 @@ No Google task was changed, completed, or recreated. These are manual live check
 not proof of unattended polling or a live computer-off catch-up; automated crash/
 offline queue behavior remains covered separately by isolated tests. Private source
 IDs and the activation checkpoint are retained under the app's local state directory.
-Read-only confirmation on 2026-11-01 still found one delivered receipt with one
-writer attempt; no new live writer proof was performed.
+An earlier read-only checkpoint on 2026-11-01 still found one delivered receipt with
+one writer attempt; that check preceded the new scheduled writer proof below.
 
 The queue is a dedicated versioned SQLite database, **never the MindWeaver notes
 database**. Its parent must already exist. New Unix files use mode `0600`; existing
@@ -209,9 +210,10 @@ duplicate previously captured items. Retain the old queue and receipts for revie
    are verified for the current setup.
 4. Choose `baseline` versus `import-open` deliberately before the first poll. Then
    retain the existing Android capture, desktop staging, canonical receipt, and
-   manual repeat-run nonduplication proof. Those checks are complete. Actual
-   computer-off capture/catch-up and a new phone-task-to-background-source-write
-   delivery remain unverified. Scheduled polling is enabled and verified;
+    manual repeat-run nonduplication proof. Those checks and the new scheduled
+    phone-to-editor-owned writer/repeat proof are complete. Actual computer-off
+    capture/catch-up and full pending-job dirty-buffer delivery deferral remain
+    unverified. Scheduled polling is enabled and verified;
    isolated tests do not activate an account or phone.
 
 For a new setup's first live proof, use an initially empty personal list, baseline
@@ -331,7 +333,7 @@ name, and visibility checks, the probe was removed and clean readiness restored.
 This is live readiness-deferral proof, **not** a live full pending-job dirty-buffer
 delivery test.
 
-Two controlled `run-once` cycles completed in about 0.5 seconds each. Each observed
+At the earlier polling checkpoint, two controlled `run-once` cycles completed in about 0.5 seconds each. Each observed
 1, unchanged 1, staged 0, delivered 0, with `authActionRequired: false` and
 generation 1. The receipt remains attempt 1; no duplicates or Inbox/dashboard
 hash, byte, or mtime changes occurred. This proves completed no-UI polling while
@@ -375,7 +377,7 @@ a matching label or marker alone is not ownership. Unknown/colliding jobs are re
 
 Install/start have now been executed: `serviceActive: true`,
 `serviceState: loaded_owned`. Native LaunchAgent ownership/status parsing and
-actual scheduled polling are verified by these two completed launchd cycles:
+actual scheduled polling were first verified by these two completed launchd cycles:
 
 | Cycle | ID | Started (epoch ms) | Finished (epoch ms) |
 | --- | --- | --- | --- |
@@ -384,11 +386,34 @@ actual scheduled polling are verified by these two completed launchd cycles:
 
 Starts were about 60.7 seconds apart. Both had no pending work, observed 1 unchanged,
 staged/delivered 0, and no auth action required. Polling is running in the GUI user
-session at a 60-second interval, 45-second timeout, limit 1. Google holds work while
-the computer is off; there is no server. A new phone task reaching Markdown through
-background source-write delivery and live computer-off catch-up are **not yet
-live-verified**. Source-write/guarded delivery has isolated integration and earlier
-manual capture proof only.
+session at a 60-second interval, 45-second timeout, limit 1. These earlier no-work
+cycles are distinct from the new scheduled source-write proof below.
+
+#### New scheduled phone capture and repeat proof (2026-11-01)
+
+The user added `Verify scheduled phone capture` in Google Tasks on the phone,
+undated and title-only. No manual `run-once` triggered its delivery.
+
+| Evidence | Actual result |
+| --- | --- |
+| Automatic scheduled delivery cycle | Complete; observed 2, staged 1, unchanged 1, delivered 1, pending 0. |
+| New queue record and durable `todos-add` receipt | `delivered`, one attempt, `alreadyCaptured: false`, `done: false`, `projectionUpdated: true`; `sourcePath: introspection/inbox.md`, Todo / Inbox, line 12. |
+| Canonical source verification | Receipt `sourceRevision` matches the actual Inbox hash; actual Markdown has exactly one unchecked task with its stable marker. Recursive search of the whole notes root found only that one source entry. |
+| Same-cycle native Neovim bridge | `phase: done`, delivered 1, `writerExited: true`, conflicts 0; afterward `busy: false`, mode `n`, no dirty buffers. |
+| Fresh next actual scheduled cycle | Observed 2, unchanged 2, staged 0, delivered 0, `no_pending`, `authActionRequired: false`; `serviceActive: true`, `serviceState: loaded_owned`. |
+| Repeat safety | New capture still has one attempt and its receipt; original capture also retains one attempt. Inbox (324 bytes) and dashboard (4,651 bytes) bytes, sizes, and mtimes are unchanged from post-delivery to follow-up. Dashboard content retained its earlier hash; its mtime changed on first delivery only. |
+
+This proves new scheduled phone-to-editor-owned writer delivery and repeat
+nonduplication, not merely polling or queue staging. No Google completion, source
+completion, or archival was performed. Private IDs and the detailed checkpoint stay
+in private local state maintained by the main session, not public docs.
+
+Practical limit: polling runs only in the GUI user session; Google holds work while
+the computer is off, with no server. **Live computer-off catch-up and full pending-job
+dirty-buffer delivery deferral are not yet performed.** The read-only dirty-buffer
+readiness probe above is already proven, but is not that delivery test. Controls
+remain active at 60 seconds, 45-second timeout, limit 1; no code or test changes
+were needed for this live proof.
 
 Use the stable binary for routine inspection and lifecycle control. `start` resumes
 a stopped owned agent; `uninstall` is optional removal, not needed just to pause:
@@ -443,9 +468,9 @@ for one Android capture. Latest-build foreground status/lists, two controlled
 background cycles, and actual LaunchAgent startup/next scheduled cycles now verify
 enabled polling and no-UI Keychain access while unlocked. Live dirty-buffer
 readiness deferral is proven, not full pending-job dirty-buffer delivery deferral.
-New phone-task-to-background-source-write delivery and live computer-off catch-up
-remain unverified; isolated integrations and earlier manual capture are the only
-source-write/guarded-delivery proof. No additional tests ran during activation.
+The subsequent automatic new-phone scheduled cycle and fresh scheduled repeat above
+also prove editor-owned source-write delivery and nonduplication. Live computer-off
+catch-up remains unverified. No additional tests ran during activation or this live proof.
 This docs-only update adds or reruns no tests and changes no source code; the
 270-test record is unchanged. Calendar/export/completion writeback, lifelog,
 and PWA migration remain pending. Background, auth, and capture pass strict Clippy;

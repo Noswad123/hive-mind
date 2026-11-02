@@ -13,7 +13,8 @@ queue is initialized at `~/Library/Application Support/Hive/google-captures.sqli
 (operational metadata only, not automatically loaded configuration). The first
 Android-to-Markdown capture is now live-verified: one task, one writer attempt, and
 a repeated poll/delivery with no duplicate or note/dashboard rewrite. The task is
-still unchecked. Scheduled background polling is enabled and verified, and the
+still unchecked. New scheduled phone-to-editor-owned writer delivery and repeat
+nonduplication are also live-verified on 2026-11-01, and the
 live editor is registered and ready. The downloaded root client
 file is Git-ignored.
 Do not paste client files, authorization codes, or tokens into chat.
@@ -36,15 +37,26 @@ orphaned ChatGPT helper cleanup, installed `editor-check` reports `ready: true`,
 `noEditor: false`, `deferred: null`. A live unsaved hidden-buffer probe verified
 `dirty_buffers` readiness deferral without note edits, then clean readiness was
 restored with the guard unchanged and `busy: false`.
-Two controlled `run-once` cycles completed in about 0.5 seconds each, observing one
+At the earlier polling checkpoint, two controlled `run-once` cycles completed in about 0.5 seconds each, observing one
 unchanged task, staging/delivering zero, with `authActionRequired: false` and
 generation 1. Background install/start then enabled the owned LaunchAgent:
 `serviceActive: true`, `serviceState: loaded_owned`. Actual startup and next
 scheduled cycles completed about 60.7 seconds apart, each with no pending work,
 one unchanged observation, zero staged/delivered, and no auth action required.
 This positively proves latest-build no-UI background Keychain access while
-unlocked, not denial/locked scenarios. Inbox/dashboard hashes, bytes, and mtimes
-remain unchanged; the receipt is still attempt 1 with no duplicates. See the
+unlocked, not denial/locked scenarios. Those cycles left Inbox/dashboard hashes,
+bytes, and mtimes unchanged and the original receipt at attempt 1.
+The user subsequently added the undated, title-only `Verify scheduled phone capture`
+on the phone. An automatic scheduled cycle (not `run-once`) observed 2, staged 1,
+unchanged 1, delivered 1, pending 0, and completed through the native Neovim bridge
+with `writerExited: true` and zero conflicts. Its one-attempt durable receipt matches
+the actual Inbox revision; Markdown and a recursive whole-notes-root search confirm
+exactly one unchecked stable-marker source entry. The next actual scheduled cycle
+observed 2 unchanged, staged/delivered 0, `no_pending`, `authActionRequired: false`,
+with `serviceActive: true`, `serviceState: loaded_owned`. Both receipts retain one
+attempt; Inbox/dashboard bytes, sizes, and mtimes were unchanged after delivery
+through follow-up. Dashboard content was unchanged even on delivery, but its mtime
+changed then. See the
 [activation runbook](google-tasks-capture.md#background-activation-enabled-and-verified)
 for evidence and stable-path status/stop/start/uninstall controls. Polling runs in
 the GUI user session; Google holds work while the computer is off, with no server.
@@ -247,10 +259,11 @@ only known-permission booleans/counts, never tokens or provider-controlled value
 The real-writer checks use isolated temporary notes, not the live notes tree.
 Separately, two controlled cycles and actual LaunchAgent startup/next scheduled
 cycles now prove enabled polling and no-UI Keychain access while unlocked.
-They do not prove a new phone-task-to-background-source-write delivery or live
-computer-off catch-up. Live dirty-buffer readiness deferral is proven, not full
-pending-job dirty-buffer delivery deferral. Source-write/guarded delivery retains
-isolated integration and earlier manual capture proof only. Calendar, export,
+The subsequent new-phone automatic scheduled delivery and next-scheduled-cycle
+nonduplication proof establish the editor-owned source-write path separately from
+those earlier polling checks. Live computer-off catch-up remains unverified.
+Live dirty-buffer readiness deferral is proven, not full pending-job dirty-buffer
+delivery deferral. No Google/source completion or archival was performed. Calendar, export,
 completion writeback, lifelog, and PWA migration remain pending. No additional tests
 ran during activation; this docs-only update changes no source code and adds or
 reruns no tests. The 270-test record above is unchanged.

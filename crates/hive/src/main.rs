@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use hive_core::{DoctorStatus, ProjectLayout};
 use serde::Serialize;
 
+mod calendar;
 mod captures_auth;
 mod captures_background;
 use captures_auth::{CaptureAuthCommand, GoogleCredentialArgs, ResolvedGoogleClient};
@@ -24,6 +25,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Credential-free Calendar previews; no publication or Google access.
+    Calendar {
+        #[command(subcommand)]
+        command: calendar::CalendarCommand,
+    },
     /// Inbound Google Tasks capture, separate from legacy todo synchronization.
     Captures {
         #[command(subcommand)]
@@ -667,6 +673,7 @@ async fn main() -> Result<()> {
         root: None,
     }) {
         Commands::Version { short } => version_command(short),
+        Commands::Calendar { command } => calendar::command(command),
         Commands::Captures { command } => {
             tokio::task::spawn_blocking(move || captures_command(command))
                 .await
