@@ -13,7 +13,7 @@ Hive Mind is the sync/API/mobile companion project for MindWeaver.
 hive-mind/
   crates/hive          CLI entrypoint: `hive`
   crates/hive-capture  desktop-local Google Tasks inbound queue and mw delivery
-  crates/hive-calendar credential-free Calendar planning and approved local ledger persistence
+  crates/hive-calendar local Calendar planning/persistence and a dormant private HTTP adapter
   crates/hive-background bounded worker, editor coordination, and owned macOS LaunchAgent
   crates/hive-google-auth desktop Google OAuth, refresh, and native macOS Keychain storage
   crates/hive-core     shared protocol/client/diagnostic types
@@ -391,11 +391,171 @@ roll back. Output failure after CAS has the same recovery boundary.
 
 See [macOS persistence evidence](docs/release.md#calendar-local-persistence-checkpoint-2026-11-02)
 and the [architecture contract](docs/product-architecture-roadmap.md#calendar-local-approval-and-persistence).
-Normal-user integration, durable provider intents/results (remote APIs and Git are
-not one transaction), hosted CI serialization, pinned Linux runtime, account cost
+Normal-user integration, authenticated provider results and reconciliation (remote
+APIs and Git are not one transaction), hosted CI serialization, pinned Linux runtime, account cost
 hard stop, Calendar OAuth/executor, and remote lease/CAS push remain pending. No
 paid service is required by default; Linux remains explicitly deferred, with no
 VM probes or target installs requested. Installed binaries and worker are untouched.
+
+## Calendar offline operations
+
+**Offline stage DONE, not an actual publisher.** Built-debug, not installed,
+`calendar prepare` proposes a persistable frozen intent; `calendar mark-uncertain`
+proposes monotonic recovery evidence; `calendar simulate-ack` produces only an
+operator-asserted, **nonpersistable hypothetical result**. None calls Google,
+reads credentials, adds source comments, or authorizes provider dispatch.
+
+The following are placeholder generation examples, not activation instructions:
+
+```sh
+./target/debug/hive calendar prepare \
+  --repo /ABS/local/notes --commit FULL_LOWER_SOURCE_SHA \
+  --mw-bin /ABS/trusted/PINNED_mw \
+  --source-repo-id OPAQUE_REPO_ID \
+  --account-id google-sub-v1:ACCOUNT_64_LOWER_HEX \
+  --calendar-id CONCRETE_CALENDAR_ID \
+  --ledger-repo /ABS/dedicated-bare-state.git \
+  --ledger-commit FULL_LOWER_LEDGER_SHA --ledger-path calendar/ledger.json \
+  --logical-id EXISTING_LEDGER_UUID
+
+./target/debug/hive calendar mark-uncertain \
+  --source-repo-id OPAQUE_REPO_ID \
+  --account-id google-sub-v1:ACCOUNT_64_LOWER_HEX \
+  --calendar-id CONCRETE_CALENDAR_ID \
+  --ledger-repo /ABS/dedicated-bare-state.git \
+  --ledger-commit FULL_LOWER_PREPARED_LEDGER_SHA --ledger-path calendar/ledger.json \
+  --logical-id EXISTING_LEDGER_UUID --operation-id PERSISTED_OPERATION_UUID
+
+./target/debug/hive calendar simulate-ack \
+  --source-repo-id OPAQUE_REPO_ID \
+  --account-id google-sub-v1:ACCOUNT_64_LOWER_HEX \
+  --calendar-id CONCRETE_CALENDAR_ID \
+  --ledger-repo /ABS/dedicated-bare-state.git \
+  --ledger-commit FULL_LOWER_PENDING_LEDGER_SHA --ledger-path calendar/ledger.json \
+  --logical-id EXISTING_LEDGER_UUID --operation-id PERSISTED_OPERATION_UUID \
+  --observation /ABS/reviewed/operator-observation.json \
+  --observation-sha256 APPROVED_64_LOWER_HEX \
+  --assert-operator-observation
+```
+
+All three select **either** `--logical-id` **or** `--old-source-path` plus positive
+one-based `--old-source-line`, never both. The latter selects the ledger's old
+acknowledged location, not a new current source location. Prepare alone requires
+the source repo/commit/MW inputs. Generation of mark-uncertain and simulation has
+no `--repo`, `--commit`, or `--mw-bin` inputs and never reads today's notes/parser.
+
+Prepare requires a selected nonretired entry, no pending operation **anywhere**,
+exact current source acknowledgement/parser basis, and open valid-due source.
+Enrolled creates reserve `h1` plus a namespace/logical-UUID SHA-256 hex digest;
+active updates retain the acknowledged event ID/base etag and require a changed
+managed payload hash. Payload equality refuses as a no-op. A fresh bounded
+OS-entropy UUIDv4 identifies the operation. Only the selected `pending: prepared`
+is added; source ACK, watermark, lifecycle, provider ACK, and other entries stay
+unchanged. The deterministic event reservation proves neither provider absence,
+ownership, nor an idempotent API. No delete/retire operation is added.
+
+Prepare and mark-uncertain emit strict `schemaVersion: "2"`,
+`kind: "calendar-operation-candidate"`, operation `prepare` / `mark_uncertain`,
+`operationId`, `intentDigest`, source/parser metadata, exact base, and whole V1
+`candidateLedger`. The digest binds the immutable intent and namespace, not phase.
+Reviewed ordinary verify/apply supports these candidates with full semantic replay,
+the same dedicated bare fixed-ref CAS, cancellation guard, and exact-retry policy
+described above. Neither `--create-ref` nor `--accept-parser-change` is allowed.
+**Persist the approved prepared intent before any future dispatch. Prepared is
+not safe-to-retry or dispatch authorization; both phases block a new prepare.**
+
+Mark-uncertain requires the exact persisted Prepared operation ID and changes only
+its phase to Uncertain. Frozen sourceCommit/parser metadata is retained; unrelated
+current edits, deleted notes, or unavailable MW do not block recovery. Generating
+a new candidate from already-Uncertain state refuses, but exact apply retry is
+idempotent. No cancel, clear, reset, or reprepare escape exists.
+
+**Verify/apply CLI compatibility exception:** generic `SourceArgs` still requires
+`--repo`, `--commit`, and `--mw-bin` for V2 mark-uncertain candidates. `--commit`
+must equal the candidate's frozen source metadata; the repo/MW paths are not read
+on this phase-only route. This validates frozen recovery, not current eligibility.
+Prepare replay still requires the actual pinned source and parser.
+
+Simulation captures one absolute regular no-follow observation file, at most 1 MiB,
+checking the independently approved exact-byte lowercase SHA-256 and rejecting
+duplicate/unknown fields or trailing JSON. Its strict observation uses string
+`schemaVersion: "1"`, `provenance: "operator_asserted"`, `binding`, `logicalId`,
+`operationId`, `intentDigest`, `eventId`, `etag`, `managedLogicalId`, and
+`payload: {summary, startDate, endDate, transparency}`. Namespace, IDs, target,
+intent and recomputed managed payload hash must match the frozen pending intent;
+the asserted result etag must be nonempty, bounded, and control-free. This is not
+authentication or an etag-based remote concurrency check. Fake `verified_http`
+provenance or an input `remoteVerified` field refuses; there is no trust override.
+
+Output is `schemaVersion: "2"`, `kind: "calendar-provider-simulation"`, with typed
+embedded `observation`, `observationSha256`, and `hypotheticalLedger`;
+`simulationOnly: true`, `persistenceAllowed: false`, and publication/remote/head
+verification false. The hypothetical create/update success sets Active/provider ACK
+and clears pending, retaining source ACK/watermark even after current notes vanish.
+**Ordinary verify AND apply reject this output even with its correct approved SHA.**
+The persisted pending and provider ACK remain unchanged. At the offline checkpoint
+there was no authenticated-success constructor or transport. The private adapter
+below now exists, but authenticated result persistence is still not complete.
+
+Ledger V1 and enroll/reack Candidate V1 wire formats remain unchanged. New operations
+use V2 ownership records and local apply receipts with operation/intent fields.
+The current writer reads both versions; old state writers refuse V2-owned tips,
+which does not imply all read-only V1 ledger readers refuse the unchanged ledger.
+Git CAS coordinates ledger writes, not exclusive API dispatch ownership.
+
+See the [offline operation contract](docs/product-architecture-roadmap.md#calendar-offline-operation-contract)
+and [macOS evidence](docs/release.md#calendar-offline-operation-checkpoint-2026-11-02).
+Production transport activation/write OAuth/native or hosted secret storage,
+durable authenticated ACK/reconciliation, exclusive dispatch ownership, hosted
+workflow/remote CAS push, and billing hard stop remain gates. No paid DB is needed
+for this protocol. Normal-user UI/policy and automatic enrollment remain pending;
+conservative source-basis restrictions are unchanged. Linux is user-deferred with
+no probes, VMs, or target installs. Installed binaries and worker remain unchanged.
+All private-output/no-upload boundaries above apply.
+
+## Calendar private HTTP adapter (dormant)
+
+**Private adapter code and loopback-test milestone DONE, not an actual publisher
+or activation.** The compiled `calendar_transport` module has no new public export,
+CLI command, configuration, environment credential lookup, or production consumer.
+POST/PATCH requires a private move-only intent/origin-bound `DispatchPermit` with
+no production constructor; Prepared and local Git CAS are not dispatch authority.
+The opaque zeroizing, redacted token makes no verified identity/scope claim. No
+credential provider, Keychain, refresh, or grant behavior changed.
+
+Fixed production HTTPS Userinfo and Calendar endpoints use no proxy, redirects,
+or retries, a shared 30-second operation deadline, 10-second connect timeout, and
+64 KiB Userinfo / 1 MiB event limits. Before any Calendar request, same-bearer
+Userinfo `sub` must match the binding's existing Google identity namespace. This
+does not prove scopes, calendar ownership, or dispatch authority; future activation
+needs separate Calendar-write + OpenID authorization, not the Tasks-readonly grant.
+Bound-event GET reconciliation observes desired state, not dispatch causality.
+Create uses the reserved ID; update validates prior ownership/hash and exact strong
+quoted etag before managed-fields-only If-Match PATCH, preserving unrelated private
+properties. No unmanaged-event writes, DELETE, timed events, or recurrence support.
+
+Sealed validator results distinguish mutation responses from reconciled observations
+and carry immutable endpoint origin. Test-only literal `127.0.0.1` HTTP results
+are ineligible for production authentication evidence or durable ACK authority.
+No authenticated ACK consumer/reducer/persistence, V3 receipt, exclusive worker, or
+remote Git coordination was added. Simulation, Ledger V1, Candidate V1/V2 and local
+receipts are unchanged; JSON or a `remoteVerified` boolean cannot supply trusted results.
+
+Recorded macOS implementation results: **430 normal workspace passed / 13 ignored**
+(serial locked/offline suite), Calendar **145 normal / 3 ignored**; all **15 actual
+reqwest loopback tests** passed in latest default-parallel and serial runs and the
+full suite. Strict Calendar all-targets Clippy, fmt/build passed. The six real-MW
+gates belong to the earlier **415** checkpoint and were **not rerun** for this
+adapter. Only loopback HTTP was tested, not live Google authentication/provider
+behavior. No tests or network operations ran for this documentation update.
+
+See the [adapter contract](docs/product-architecture-roadmap.md#calendar-private-http-adapter)
+and [validation evidence](docs/release.md#calendar-private-http-adapter-checkpoint-2026-11-02).
+Next: trusted in-process results into durable ACK validation/receipts/recovery,
+exclusive authoritative dispatch ownership, credentials/grants, hosted CI/remote
+CAS, cost cap, and Linux validation later before deployment. All remain pending;
+Linux is explicitly deferred with no probes, VMs, or target installs. No actual
+notes/refs/state/provider/credentials/services/installation or capture-worker changes.
 
 ## Start a local sync API
 

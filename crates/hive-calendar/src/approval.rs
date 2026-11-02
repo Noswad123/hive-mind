@@ -540,6 +540,41 @@ mod tests {
     }
 
     #[test]
+    fn captured_simulations_and_unknown_envelopes_never_reach_source_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut options = options(false);
+        options.candidate_path = temp.path().join("candidate.json");
+        for (version, kind) in [
+            ("2", "calendar-provider-simulation"),
+            ("1", "calendar-operation-candidate"),
+            ("2", "calendar-ledger-candidate"),
+            ("3", "calendar-operation-candidate"),
+        ] {
+            for remote in [json!(true), json!("verified HTTP private-value")] {
+                let bytes = serde_json::to_vec(&json!({
+                    "schemaVersion": version, "kind": kind,
+                    "remoteVerified": remote, "publicationReady": true,
+                    "provenance": "verified HTTP"
+                }))
+                .unwrap();
+                fs::write(&options.candidate_path, &bytes).unwrap();
+                options.expected_candidate_sha256 = format!("{:x}", Sha256::digest(&bytes));
+                assert_eq!(
+                    validate(&options, deadline()).err().unwrap().to_string(),
+                    "unsupported candidate envelope"
+                );
+            }
+        }
+        let bytes = br#"{"schemaVersion":"2","kind":"calendar-operation-candidate","hidden":{"x":1,"x":2}}"#;
+        fs::write(&options.candidate_path, bytes).unwrap();
+        options.expected_candidate_sha256 = format!("{:x}", Sha256::digest(bytes));
+        assert_eq!(
+            validate(&options, deadline()).err().unwrap().to_string(),
+            "invalid candidate JSON or schema"
+        );
+    }
+
+    #[test]
     fn capture_is_bounded_exact_byte_approval_and_never_reopens() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("candidate");
@@ -928,6 +963,28 @@ pub(crate) fn validate(
         operation,
     )?;
     before(deadline, operation)?;
+    // Inspect only a unique-key value after exact-byte capture. In particular,
+    // simulations never reach a validator, regardless of any claimed provenance.
+    let envelope: serde_json::Value = ledger::decode_unique_json(&bytes)
+        .map_err(|_| anyhow!("invalid candidate JSON or schema"))?;
+    before(deadline, operation)?;
+    match (
+        envelope.get("schemaVersion").and_then(|v| v.as_str()),
+        envelope.get("kind").and_then(|v| v.as_str()),
+    ) {
+        (Some("1"), Some("calendar-ledger-candidate")) => {}
+        (Some("2"), Some("calendar-operation-candidate")) => {
+            let candidate: crate::operations::OperationCandidate = serde_json::from_value(envelope)
+                .map_err(|_| anyhow!("invalid candidate JSON or schema"))?;
+            before(deadline, operation)?;
+            let change = crate::operations::validate_candidate(
+                &candidate, options, &digest, deadline, operation,
+            )?;
+            before(deadline, operation)?;
+            return Ok(change);
+        }
+        _ => return Err(anyhow!("unsupported candidate envelope")),
+    }
     let candidate = decode(&bytes, options)?;
     before(deadline, operation)?;
     let location = LedgerLocation {
@@ -1113,7 +1170,7 @@ fn replay_checked(
     check()?;
     let change = PreparedLedgerChange {
         candidate_sha256: digest,
-        operation: replayed.operation,
+        operation: replayed.operation.into(),
         logical_id: replayed.logical_id,
         source_commit: replayed.source_commit,
         binding: options.binding.clone(),
@@ -1122,6 +1179,7 @@ fn replay_checked(
         path: replayed.base.path,
         expected_blob_id: replayed.base.git_blob_id,
         candidate_ledger: bytes,
+        provider_operation: None,
     };
     check()?;
     Ok(change)

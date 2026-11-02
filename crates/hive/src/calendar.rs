@@ -31,6 +31,16 @@ pub enum CalendarCommand {
     ///
     /// Creates Git objects and performs one atomic ref update. Never pushes or calls Google.
     Apply(Box<ApplyArgs>),
+    /// Propose a frozen create/update intent before any future provider dispatch.
+    ///
+    /// Candidate only. A prepared intent is not proof that retrying or dispatching is safe.
+    Prepare(Box<PrepareArgs>),
+    /// Propose prepared -> uncertain for one frozen intent, without reading current notes.
+    MarkUncertain(Box<FrozenArgs>),
+    /// Simulate an acknowledgement from an explicitly unverified operator observation.
+    ///
+    /// Hypothetical result only. Ordinary verify/apply refuses this output.
+    SimulateAck(Box<SimulationArgs>),
 }
 
 #[derive(Debug, clap::Args)]
@@ -239,6 +249,72 @@ impl ApplyArgs {
     }
 }
 
+#[derive(Debug, clap::Args)]
+struct EntryArgs {
+    #[arg(long, conflicts_with_all = ["old_source_path", "old_source_line"])]
+    logical_id: Option<String>,
+    #[arg(
+        long,
+        required_unless_present = "logical_id",
+        requires = "old_source_line"
+    )]
+    old_source_path: Option<String>,
+    #[arg(long, requires = "old_source_path")]
+    old_source_line: Option<usize>,
+}
+
+impl EntryArgs {
+    fn into_selection(self) -> Result<hive_calendar::EntrySelection> {
+        match (self.logical_id, self.old_source_path, self.old_source_line) {
+            (Some(id), None, None) => Ok(hive_calendar::EntrySelection::LogicalId(id)),
+            (None, Some(path), Some(line)) => {
+                Ok(hive_calendar::EntrySelection::AcknowledgedLocation { path, line })
+            }
+            _ => bail!("select a logical ID or an old acknowledged path and line"),
+        }
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct PrepareArgs {
+    #[command(flatten)]
+    source: SourceArgs,
+    #[command(flatten)]
+    binding: BindingArgs,
+    #[command(flatten)]
+    ledger: LedgerArgs,
+    #[command(flatten)]
+    entry: EntryArgs,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct FrozenArgs {
+    #[command(flatten)]
+    binding: BindingArgs,
+    #[command(flatten)]
+    ledger: LedgerArgs,
+    #[command(flatten)]
+    entry: EntryArgs,
+    /// Exact persisted pending operation ID; not a new operation to allocate.
+    #[arg(long)]
+    operation_id: String,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SimulationArgs {
+    #[command(flatten)]
+    frozen: FrozenArgs,
+    /// Absolute regular observation JSON, captured once and never treated as authenticated.
+    #[arg(long)]
+    observation: PathBuf,
+    /// Independently selected SHA-256 of the exact observation bytes (64 lowercase hex).
+    #[arg(long)]
+    observation_sha256: String,
+    /// Acknowledge that these are operator assertions, not authenticated provider evidence.
+    #[arg(long, required = true)]
+    assert_operator_observation: bool,
+}
+
 pub fn command(command: CalendarCommand) -> Result<()> {
     match command {
         CalendarCommand::Preview { source } => {
@@ -319,6 +395,59 @@ pub fn command(command: CalendarCommand) -> Result<()> {
                 anyhow::anyhow!("local ledger persistence may have completed; retry the exact approved candidate")
             })
         }
+        CalendarCommand::Prepare(args) => {
+            let PrepareArgs {
+                source,
+                binding,
+                ledger,
+                entry,
+            } = *args;
+            write_candidate(&hive_calendar::prepare_operation(
+                &hive_calendar::PrepareOptions {
+                    source: source.into_options(),
+                    binding: binding.into_binding(),
+                    ledger: ledger.into_location(),
+                    entry: entry.into_selection()?,
+                },
+            )?)
+        }
+        CalendarCommand::MarkUncertain(args) => {
+            let FrozenArgs {
+                binding,
+                ledger,
+                entry,
+                operation_id,
+            } = *args;
+            write_candidate(&hive_calendar::mark_uncertain(
+                &hive_calendar::UncertainOptions {
+                    binding: binding.into_binding(),
+                    ledger: ledger.into_location(),
+                    entry: entry.into_selection()?,
+                    operation_id,
+                },
+            )?)
+        }
+        CalendarCommand::SimulateAck(args) => {
+            let SimulationArgs {
+                frozen,
+                observation,
+                observation_sha256,
+                assert_operator_observation,
+            } = *args;
+            if !assert_operator_observation {
+                bail!("simulation requires explicit operator-assertion acknowledgement");
+            }
+            write_candidate(&hive_calendar::simulate_acknowledgement(
+                &hive_calendar::SimulationOptions {
+                    binding: frozen.binding.into_binding(),
+                    ledger: frozen.ledger.into_location(),
+                    entry: frozen.entry.into_selection()?,
+                    operation_id: frozen.operation_id,
+                    observation_path: observation,
+                    expected_observation_sha256: observation_sha256,
+                },
+            )?)
+        }
     }
 }
 
@@ -328,7 +457,7 @@ fn write_output(value: &impl serde::Serialize) -> Result<()> {
     writeln!(output).context("write calendar response")
 }
 
-fn write_candidate(candidate: &hive_calendar::LedgerCandidate) -> Result<()> {
+fn write_candidate(candidate: &impl serde::Serialize) -> Result<()> {
     // Complete validation/serialization before exposing any proposed ledger bytes.
     let mut encoded = serde_json::to_vec_pretty(candidate).context("encode ledger candidate")?;
     encoded.push(b'\n');

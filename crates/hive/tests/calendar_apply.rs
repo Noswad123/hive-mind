@@ -4,6 +4,8 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use hive_calendar::{Ledger, ObservationPayload, OperatorObservation, intent_digest};
+
 const STATE_REF: &str = "refs/heads/hive-calendar-state";
 const LEDGER_PATH: &str = "state/calendar.json";
 const SOURCE: &str = "---\nid: fixture\ndomains: [task]\ntask_active: true\ntask_scope: project\n---\n\n## Todo\n### Do Now\n### Inbox\n- [ ] Example deadline\n  - due:2028-02-29\n### Blocked\n";
@@ -183,6 +185,35 @@ printf '{"schemaVersion":"1","source":"saved-markdown","notesDir":"%s","dashboar
         assert!(out.status.success(), "{:?}", out.stderr);
         self.artifact("reack.json", out.stdout)
     }
+
+    fn frozen_command(&self, command: &str, base: &str, operation_id: &str) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hive"));
+        cmd.args([
+            "calendar",
+            command,
+            "--source-repo-id",
+            "apply-fixture",
+            "--calendar-id",
+            "calendar@example.invalid",
+            "--account-id",
+        ])
+        .arg(format!("google-sub-v1:{}", "a".repeat(64)))
+        .arg("--ledger-repo")
+        .arg(&self.state)
+        .args([
+            "--ledger-commit",
+            base,
+            "--ledger-path",
+            LEDGER_PATH,
+            "--old-source-path",
+            "tasks.md",
+            "--old-source-line",
+            "11",
+            "--operation-id",
+            operation_id,
+        ]);
+        cmd
+    }
 }
 
 fn json_output(command: &mut Command) -> Value {
@@ -298,6 +329,181 @@ fn an_existing_foreign_ref_is_not_adopted_during_initialization() {
     assert_eq!(git(&f.state, &["for-each-ref"]), refs);
 }
 
+fn exercise_operation_protocol(mut f: Fixture) {
+    let initial = f.initial();
+    let enrollment = json_output(&mut f.persistence("apply", &initial, true));
+    let enrollment_commit = enrollment["commit"].as_str().unwrap();
+    let output = f
+        .common("prepare", &f.source_commit)
+        .args([
+            "--ledger-commit",
+            enrollment_commit,
+            "--old-source-path",
+            "tasks.md",
+            "--old-source-line",
+            "11",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let prepared = f.artifact("prepared.json", output.stdout);
+    assert_eq!(prepared.value["schemaVersion"], "2");
+    assert_eq!(prepared.value["operation"], "prepare");
+    let verified = json_output(&mut f.persistence("verify-candidate", &prepared, false));
+    let receipt = json_output(&mut f.persistence("apply", &prepared, false));
+    assert_eq!(receipt["commit"], verified["commit"]);
+    assert_eq!(receipt["schemaVersion"], "2");
+    assert_eq!(receipt["operation"], "prepare");
+    let prepared_commit = receipt["commit"].as_str().unwrap().to_owned();
+    let ledger: Ledger = serde_json::from_str(&git(
+        &f.state,
+        &["show", &format!("{prepared_commit}:{LEDGER_PATH}")],
+    ))
+    .unwrap();
+    let entry = &ledger.entries[0];
+    let pending = entry.pending.as_ref().unwrap().clone();
+    assert_eq!(receipt["operationId"], pending.operation_id);
+    assert_eq!(
+        receipt["intentDigest"],
+        intent_digest(&ledger.binding, &entry.logical_id, &pending).unwrap()
+    );
+    let repeat_prepare = f
+        .common("prepare", &f.source_commit)
+        .args([
+            "--ledger-commit",
+            &prepared_commit,
+            "--old-source-path",
+            "tasks.md",
+            "--old-source-line",
+            "11",
+        ])
+        .output()
+        .unwrap();
+    assert!(!repeat_prepare.status.success());
+    assert!(repeat_prepare.stdout.is_empty());
+
+    // Frozen recovery must survive unavailable current source and parser artifacts.
+    let offline_source = f.temp.path().join("source-offline");
+    let original_parser = f.parser.clone();
+    fs::rename(&f.source, &offline_source).unwrap();
+    f.parser = f.temp.path().join("unavailable-parser");
+    let wrong_operation = f
+        .frozen_command(
+            "mark-uncertain",
+            &prepared_commit,
+            "00000000-0000-4000-8000-000000000001",
+        )
+        .output()
+        .unwrap();
+    assert!(!wrong_operation.status.success());
+    assert!(wrong_operation.stdout.is_empty());
+    let out = f
+        .frozen_command("mark-uncertain", &prepared_commit, &pending.operation_id)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let uncertain = f.artifact("uncertain.json", out.stdout);
+    assert_eq!(
+        uncertain.value["intentDigest"],
+        prepared.value["intentDigest"]
+    );
+    let checked = json_output(&mut f.persistence("verify-candidate", &uncertain, false));
+    let saved = json_output(&mut f.persistence("apply", &uncertain, false));
+    assert_eq!(saved["commit"], checked["commit"]);
+    assert_eq!(saved["operation"], "mark_uncertain");
+    let uncertain_commit = saved["commit"].as_str().unwrap().to_owned();
+    let retry = json_output(&mut f.persistence("apply", &uncertain, false));
+    assert_eq!(retry["status"], "already_applied");
+    // Restore the prepare inputs so this refusal reaches the stale-ref check,
+    // rather than merely failing to read the intentionally offline source.
+    fs::rename(&offline_source, &f.source).unwrap();
+    f.parser = original_parser;
+    let before_stale = git(&f.state, &["count-objects", "-v"]);
+    let stale = f.persistence("apply", &prepared, false).output().unwrap();
+    assert!(!stale.status.success());
+    assert!(stale.stdout.is_empty());
+    assert_eq!(git(&f.state, &["count-objects", "-v"]), before_stale);
+    fs::rename(&f.source, &offline_source).unwrap();
+    f.parser = f.temp.path().join("unavailable-parser");
+    let no_reset = f
+        .frozen_command("mark-uncertain", &uncertain_commit, &pending.operation_id)
+        .output()
+        .unwrap();
+    assert!(!no_reset.status.success());
+    assert!(no_reset.stdout.is_empty());
+
+    let observation = OperatorObservation {
+        schema_version: "1".into(),
+        provenance: "operator_asserted".into(),
+        binding: ledger.binding.clone(),
+        logical_id: entry.logical_id.clone(),
+        operation_id: pending.operation_id.clone(),
+        intent_digest: intent_digest(&ledger.binding, &entry.logical_id, &pending).unwrap(),
+        event_id: pending.target_event_id.clone(),
+        etag: "\"unverified-observation\"".into(),
+        managed_logical_id: entry.logical_id.clone(),
+        payload: ObservationPayload {
+            summary: pending.intended_source.expected.text.clone(),
+            start_date: "2028-02-29".into(),
+            end_date: "2028-03-01".into(),
+            transparency: "transparent".into(),
+        },
+    };
+    let bytes = serde_json::to_vec(&observation).unwrap();
+    let observation_path = f.temp.path().join("observation.json");
+    fs::write(&observation_path, &bytes).unwrap();
+    let observation_digest = format!("{:x}", Sha256::digest(&bytes));
+    let mut simulate = f.frozen_command("simulate-ack", &uncertain_commit, &pending.operation_id);
+    simulate
+        .arg("--observation")
+        .arg(&observation_path)
+        .args(["--observation-sha256", &observation_digest]);
+    let missing_assertion = simulate.output().unwrap();
+    assert!(!missing_assertion.status.success());
+    assert!(missing_assertion.stdout.is_empty());
+    let out = simulate
+        .arg("--assert-operator-observation")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["simulationOnly"], true);
+    assert_eq!(value["persistenceAllowed"], false);
+    assert_eq!(value["remoteVerified"], false);
+    assert_eq!(
+        value["hypotheticalLedger"]["entries"][0]["pending"],
+        Value::Null
+    );
+    let simulation_path = f.temp.path().join("simulation.json");
+    fs::write(&simulation_path, &out.stdout).unwrap();
+    let simulation = Artifact {
+        path: simulation_path,
+        digest: format!("{:x}", Sha256::digest(&out.stdout)),
+        source_commit: pending.intended_source.commit.clone(),
+        value,
+    };
+    let objects = git(&f.state, &["count-objects", "-v"]);
+    for command in ["verify-candidate", "apply"] {
+        let out = f.persistence(command, &simulation, false).output().unwrap();
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+    }
+    assert_eq!(git(&f.state, &["rev-parse", STATE_REF]), uncertain_commit);
+    assert_eq!(git(&f.state, &["count-objects", "-v"]), objects);
+    let persisted: Ledger = serde_json::from_str(&git(
+        &f.state,
+        &["show", &format!("{uncertain_commit}:{LEDGER_PATH}")],
+    ))
+    .unwrap();
+    assert!(persisted.entries[0].pending.is_some());
+    assert!(persisted.entries[0].provider_ack.is_none());
+}
+
+#[test]
+fn offline_operation_intent_recovery_and_unpersistable_ack_simulation() {
+    exercise_operation_protocol(Fixture::new());
+}
+
 #[test]
 #[ignore = "requires explicit MW_TEST_BIN; applies only in dedicated temporary bare repositories"]
 fn real_mw_local_ledger_persistence_round_trip() {
@@ -306,4 +512,14 @@ fn real_mw_local_ledger_persistence_round_trip() {
         .expect("set MW_TEST_BIN explicitly")
         .into();
     exercise_round_trip(f);
+}
+
+#[test]
+#[ignore = "requires explicit MW_TEST_BIN; offline operation protocol in temporary bare repositories"]
+fn real_mw_offline_operation_protocol_round_trip() {
+    let mut f = Fixture::new();
+    f.parser = std::env::var_os("MW_TEST_BIN")
+        .expect("set MW_TEST_BIN explicitly")
+        .into();
+    exercise_operation_protocol(f);
 }

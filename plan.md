@@ -224,7 +224,7 @@ bindings, source commit, pinned parser artifact, and permission flags.
 Preflight does not atomically exclude worktree/config administration races; CAS
 handles ledger writers, not admins. Focused review closed the lost-cancellation P2:
 ready for local persistence under that assumption, not general deployment.
-Latest supplied macOS results after the root-cancellation fix: 389 normal workspace
+Historical macOS persistence results after the root-cancellation fix: 389 normal workspace
 tests passed/12 ignored; Calendar 105 normal/3 ignored; CLI apply 3 normal/1 ignored.
 The real-MW apply fixture and four earlier gates rerun all passed (five gates).
 Strict Calendar all-targets Clippy, fmt/build passed; the main CLI's four original
@@ -234,6 +234,122 @@ See [review-first usage](README.md#calendar-local-persistence) and
 All actual Git writes were confined to temporary bare test repositories: no actual
 notes/source/ref changes, new real state repo, installed binary/worker, auth/grant,
 provider, remote, workflow, credentials, or billing changes. No remote sync or Calendar writes.
+
+**Offline operation code/test milestone DONE, not an actual publisher:** built-debug,
+not installed, `calendar prepare` emits a persistable V2 frozen create/update intent
+candidate, `calendar mark-uncertain` emits a monotonic frozen recovery candidate,
+and `calendar simulate-ack` emits an operator-asserted **nonpersistable hypothetical
+result**. See [flags/examples](README.md#calendar-offline-operations),
+[schemas and encoding](docs/product-architecture-roadmap.md#calendar-offline-operation-contract),
+and [historical offline evidence](docs/release.md#calendar-offline-operation-checkpoint-2026-11-02).
+
+Prepare requires source repo/full commit/MW, independent bindings, all committed
+ledger flags, and either logical ID or old acknowledged path/line. Selected source
+must be nonretired, exactly acknowledged with current parser, open and valid-due;
+**any pending entry blocks preparation**. Enrolled reserves deterministic `h1` plus
+namespace/logical-UUID SHA-256 hex for create. Active update retains old event ID/
+base etag and requires changed payload hash; equality refuses as a no-op. A fresh
+bounded OS-entropy UUIDv4 identifies the operation. Only selected Pending Prepared
+is added; source ACK/watermark/provider ACK/lifecycle are preserved, with no source
+comments. Reservation is not remote absence/ownership/API-idempotence proof.
+
+Mark-uncertain generation requires only binding/ledger flags, the same exclusive
+entry selector, and exact persisted `--operation-id`, with no source/MW flags.
+Only Prepared -> Uncertain is supported, preserving all immutable intent fields,
+frozen sourceCommit/parser metadata and domain-versioned binary `intentDigest`.
+Current edits/deleted notes/unavailable parser do not block it. Generating again
+from Uncertain refuses; exact apply retry is idempotent. Generic verify/apply CLI
+still requires SourceArgs: `--commit` must match frozen metadata, but repo/MW paths
+are not read for this phase-only route, which proves no current eligibility.
+There is no cancel/clear/reset/reprepare, delete, or retire operation in this layer.
+Both phases block new preparation; Prepared is not retry/dispatch authorization.
+
+Simulation requires frozen binding/ledger/selector/operation ID plus absolute
+`--observation`, approved 64-lowercase-hex `--observation-sha256`, and required
+`--assert-operator-observation`. Strict single-capture regular no-follow input is
+bounded to 1 MiB and rejects unknown/duplicate/trailing JSON. Observation V1 has
+`provenance: "operator_asserted"`, binding/logical/operation/managed IDs, intent
+digest, event ID, valid asserted result etag, and exact managed payload
+`{summary,startDate,endDate,transparency}`; all frozen bindings and recomputed
+payload hash must match. Fake authenticated provenance/input `remoteVerified`
+refuses. Current notes are not read and no trust override exists.
+
+Output V2 `calendar-provider-simulation` embeds typed observation/hash and
+`hypotheticalLedger`, with `simulationOnly: true`, `persistenceAllowed: false`,
+and false remote/publication/head flags. Hypothetical success sets Active/provider
+ACK/pending None but retains frozen source ACK/watermark, even after notes vanish.
+**Ordinary verify and apply reject actual simulation output with its correct
+approved SHA**; durable pending/provider ACK remain unchanged. At this offline
+checkpoint there was no transport or authenticated-success constructor; the private
+adapter below now exists, but provider-result persistence is still not done.
+
+Ledger V1 and strict enroll/reack Candidate V1 remain unchanged. New strict V2
+`calendar-operation-candidate` (`prepare`/`mark_uncertain`) uses full replay and
+internal operation proof. V2 ownership binds operation/intent/committed phase/event/
+payload; exact V1 marker/encoding remains unchanged. The current writer reads both;
+old state writers refuse V2-owned tips, not necessarily every read-only ledger
+reader. New-operation apply receipts are V2 with operation/intent fields; V1 receipt
+fields stay unchanged. Same bare fixed-ref CAS/exact-retry/cancellation policy;
+persist the prepared candidate before any future dispatch. Git CAS is not exclusive
+API dispatch ownership or provider concurrency proof.
+
+Historical offline macOS implementation-session results: **415 normal workspace passes,
+13 ignored**, serial `cargo test --workspace --locked --offline -- --test-threads=1`;
+Calendar **130 normal/3 ignored**; CLI `calendar_apply` **4 normal/2 ignored**.
+**All six explicit real-MW gates ran and passed:** two apply gates including the
+new offline operation flow, candidate, plan, preview, source-reader. The new flow
+proves frozen recovery without source/parser, exact retry, true stale-ref rejection
+with restored preparation inputs, required operator assertion, and actual simulation
+rejection by both verify/apply without object/ref changes. Wrong observation
+bindings/IDs/digest/event/etag/payload/provenance are covered. Strict Calendar
+all-targets Clippy, fmt/build passed; no local offline P1/P2 remained and CLI e2e
+follow-ups are now done. These were executed by the implementation session, not the
+user or this docs pass. Older 389/363/339/303 counts remain historical.
+
+All fixtures used temporary repositories, including actual temporary state Git
+writes. No Google API/Keychain/live user state/hooks/CI/account-quota calls, actual
+user-repository commit/ref/push, secret/billing/provider changes, installed binary
+swap, or worker changes. This docs pass runs no tests/builds or activation commands.
+
+**Dormant private HTTP adapter code/loopback milestone DONE, not publication or
+activation:** compiled real request builders in private `calendar_transport`, with
+no public export, new CLI/config/env lookup, credential provider/Keychain/refresh/
+grant changes, or production consumer. POST/PATCH requires a private move-only
+`DispatchPermit` bound to intent/IDs/digest/kind/origin and Prepared phase; only a
+test factory exists. Prepared/local Git CAS is not authoritative dispatch ownership.
+Same-bearer Userinfo subject validation precedes Calendar I/O; principal binding
+does not prove scopes/calendar ownership/dispatch permission. Separate future
+Calendar-write + OpenID grants are required, not existing Tasks-readonly authority.
+
+Reconcile GET observes only the bound desired event, not mutation causality. Create
+uses the reserved ID/managed tags; update validates prior ownership/hash/strong
+quoted etag before managed-fields-only If-Match PATCH, preserving unrelated private
+properties. Fixed HTTPS endpoints, no proxy/redirect/retry, shared 30-second budget,
+10-second connect limit and bounded bodies constrain the adapter. Sent mutation
+5xx or I/O/timeout/malformed/mismatched success is Uncertain; GET/Userinfo 5xx is
+Unavailable with no write. 409 is collision for later explicit reconciliation;
+412 is conflict, not retry. Other static errors, including 429, do not authorize retry.
+
+Sealed validator-only results bind principal namespace, frozen intent/event/etag/
+hash, cause and immutable origin, without serde/public constructor or durable ACK
+authority. Literal loopback test evidence cannot become production authentication
+proof. No ACK consumer/reducer/persistence/V3 receipt, exclusive worker or remote
+Git coordination was added; operator simulation and V1/V2 formats remain unchanged.
+See [contract](docs/product-architecture-roadmap.md#calendar-private-http-adapter).
+
+Latest recorded main-session macOS validation: **430 normal workspace passed,
+13 ignored**, serial `cargo test --workspace --locked --offline -- --test-threads=1`;
+Calendar **145 normal/3 ignored**. All **15 actual reqwest loopback tests** passed
+latest default-parallel and serial runs plus full suite; strict Calendar all-targets
+Clippy, fmt/build passed. Sent-5xx P2 closed; builder-test delimiter corrected and
+timing tests stabilized; final review found no dormant-adapter P1/P2. The six
+real-MW gate passes remain **historical 415-checkpoint evidence, not rerun** for the
+adapter; no new gated real-MW fixtures. Four legacy main-CLI warnings remain.
+Only `127.0.0.1` HTTP was exercised, not live Google authentication/provider proof.
+No actual notes/refs/state/provider/credentials/workflow/billing/installation or
+capture-worker changes. Dependencies add declared references only, no lockfile
+version upgrades/downgrades. This docs pass runs no tests/network/services or state
+operations. See [adapter evidence](docs/release.md#calendar-private-http-adapter-checkpoint-2026-11-02).
 
 Delivery gates:
 
@@ -257,15 +373,23 @@ Delivery gates:
 - [x] Implement reviewed approval/apply semantic replay, dedicated bare state-ref
       whole-HEAD and path/blob-or-absence CAS, and exact-retry/cancellation recovery.
       Local code/test milestone only, under exclusive repository administration.
-- [ ] Design durable provider intents/results and ambiguous-outcome reconciliation;
-      a remote API operation and Git persistence are not one transaction.
+- [x] Implement offline frozen prepare/mark-uncertain V2 candidates, reviewed local
+      persistence, and explicitly nonpersistable operator-asserted ACK simulation.
+- [x] Implement the dormant private HTTP adapter and local loopback tests only;
+      no production dispatch permit constructor or activation.
+- [ ] Connect trusted in-process results to durable ACK validation/receipts/recovery,
+      authenticated success ACK candidates,
+      durable ACK CAS/reconciliation, and exclusive dispatch ownership, not just Git
+      CAS. A remote API operation and Git persistence are not one transaction.
 - [ ] Implement hosted CI serialization and remote lease/CAS push; local CAS is not
       remote-ref proof, remote synchronization, or authorization to deploy.
 - [ ] Package a pinned Linux artifact and validate its runtime later before deployment.
       Linux is untested and explicitly deferred by the user, not a local-work blocker;
       do not repeat Docker checks or install targets now.
 - [ ] Verify the account's included usage and paid-overage blocking before activation.
-- [ ] Obtain Calendar OAuth write authorization and explicit approval for hosted
+- [ ] Activate the private Calendar transport only after appropriate separate
+      Calendar-write + OpenID OAuth and native or hosted secret storage;
+      obtain explicit approval for hosted
       secrets, source-branch/workflow deployment, Calendar writes, and state-branch
       creation in real repositories. Only temporary fixture Git writes have occurred;
       no real source/state commits, pushes, secret changes, or billing changes.

@@ -14,12 +14,14 @@ use anyhow::{Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Binding, CandidateOperation, PreparedLedgerChange,
+    Binding, PreparedLedgerChange, StateOperation,
     source::{GitSession, SourceSession},
 };
 
 const STATE_REF: &str = "refs/heads/hive-calendar-state";
 const MARKER: &str = "hive-calendar-state v1\n\n";
+// Intentional upgrade boundary: V1-only clients must reject a V2-owned tip.
+const MARKER_V2: &str = "hive-calendar-state v2\n\n";
 const IDENTITY: &str = "Hive Calendar <hive-calendar@localhost>";
 // Individual objects fit the existing transport's input bound; the entire
 // visited tree graph (including reconstructed objects) is capped separately.
@@ -41,13 +43,17 @@ pub struct ApplyReceipt {
     pub commit: String,
     #[serde(rename = "ledgerBlobID")]
     pub ledger_blob_id: String,
-    pub operation: CandidateOperation,
+    pub operation: StateOperation,
     pub logical_id: String,
     pub parser_change_accepted: bool,
     pub local_ref_updated: bool,
     pub publication_ready: bool,
     pub remote_verified: bool,
     pub remote_ref_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent_digest: Option<String>,
 }
 
 // Field order, marker, JSON encoding and final LF are the v1 wire format.
@@ -94,6 +100,152 @@ impl Record {
         );
         crate::ledger::validate_binding(&self.binding)
     }
+}
+
+// Deliberately separate from the frozen V1 vocabulary and wire encoding.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedRecordV2 {
+    schema_version: String,
+    state_ref: String,
+    path: String,
+    binding: Binding,
+    ledger_blob_id: String,
+    candidate_sha256: String,
+    source_commit: String,
+    operation: String,
+    logical_id: String,
+    parser_change_accepted: bool,
+    base_commit: String,
+    expected_blob_id: Option<String>,
+    operation_id: String,
+    intent_digest: String,
+}
+
+impl OwnedRecordV2 {
+    fn message(&self) -> Result<Vec<u8>> {
+        let mut bytes = MARKER_V2.as_bytes().to_vec();
+        bytes.extend(serde_json::to_vec(self)?);
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    fn common(&self) -> Record {
+        Record {
+            schema_version: "1".into(),
+            state_ref: self.state_ref.clone(),
+            path: self.path.clone(),
+            binding: self.binding.clone(),
+            ledger_blob_id: self.ledger_blob_id.clone(),
+            candidate_sha256: self.candidate_sha256.clone(),
+            source_commit: self.source_commit.clone(),
+            operation: "enroll".into(),
+            logical_id: self.logical_id.clone(),
+            parser_change_accepted: self.parser_change_accepted,
+            base_commit: self.base_commit.clone(),
+            expected_blob_id: self.expected_blob_id.clone(),
+        }
+    }
+
+    fn validate(&self, len: usize) -> Result<()> {
+        self.common().validate(len)?;
+        ensure!(
+            self.schema_version == "2"
+                && matches!(self.operation.as_str(), "prepare" | "mark_uncertain")
+                && !self.parser_change_accepted
+                && self.expected_blob_id.is_some()
+                && operation_uuid(&self.operation_id)
+                && digest(&self.intent_digest),
+            "invalid state ownership receipt"
+        );
+        Ok(())
+    }
+
+    fn validate_ledger(&self, bytes: &[u8]) -> Result<()> {
+        let ledger = crate::ledger::decode(bytes, &self.binding)?;
+        let entry = ledger
+            .entries
+            .iter()
+            .find(|e| e.logical_id == self.logical_id)
+            .ok_or_else(|| anyhow!("owned operation entry missing"))?;
+        let pending = entry
+            .pending
+            .as_ref()
+            .ok_or_else(|| anyhow!("owned operation pending intent missing"))?;
+        let phase = if self.operation == "prepare" {
+            crate::OperationPhase::Prepared
+        } else {
+            crate::OperationPhase::Uncertain
+        };
+        ensure!(
+            pending.operation_id == self.operation_id
+                && pending.phase == phase
+                && (self.operation != "mark_uncertain"
+                    || pending.intended_source.commit == self.source_commit)
+                && crate::operations::intent_digest(&self.binding, &self.logical_id, pending)?
+                    == self.intent_digest,
+            "owned operation intent mismatch"
+        );
+        // V2 owns only the supported create/update intents, not legacy deletes.
+        // Reconstruct the frozen payload without reading current source or MW.
+        let ack = &pending.intended_source;
+        let task = crate::SourceTask {
+            id: ack.mw_id.clone(),
+            stable_id: ack.stable_id.clone(),
+            identity_kind: String::new(),
+            source_revision: ack.source_revision.clone(),
+            source_id: ack.source_id.clone(),
+            source_path: ack.path.clone(),
+            line: ack.line,
+            text: ack.expected.text.clone(),
+            literal_text: ack.expected.literal_text.clone(),
+            done: ack.expected.done,
+            metadata: crate::TaskMetadata {
+                due: ack.expected.due.clone(),
+                raw: ack.expected.raw.clone(),
+                start: ack.expected.start.clone(),
+                estimate: ack.expected.estimate.clone(),
+            },
+        };
+        let evidence = crate::projection::due_evidence(&task)?;
+        ensure!(
+            pending.kind != crate::OperationKind::Delete
+                && !task.done
+                && evidence.diagnostic.is_none()
+                && evidence.event.as_ref().is_some_and(|event| {
+                    pending.desired_payload_hash.as_ref() == Some(&crate::payload_hash(event))
+                }),
+            "owned operation payload mismatch"
+        );
+        if pending.kind == crate::OperationKind::Create {
+            ensure!(
+                pending.target_event_id
+                    == crate::operations::reserved_event_id(&self.binding, &self.logical_id)?,
+                "owned operation event mismatch"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn operation_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(i, b)| {
+            if [8, 13, 18, 23].contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+            }
+        })
+        && value.bytes().any(|b| b != b'0' && b != b'-')
+}
+
+fn digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|v| {
+        v.len() == 64
+            && v.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 struct Object {
@@ -582,15 +734,23 @@ impl Preparation {
 
     fn ownership(&mut self, base: &Commit, change: &PreparedLedgerChange) -> Result<()> {
         self.git.check()?;
-        let json = base
-            .message
-            .strip_prefix(MARKER.as_bytes())
-            .ok_or_else(|| anyhow!("foreign state base commit: owned receipt required"))?;
-        let record: Record = serde_json::from_slice(json)
-            .map_err(|_| anyhow!("malformed state ownership receipt"))?;
-        record.validate(self.len)?;
+        let (record, message, v2) = if let Some(json) = base.message.strip_prefix(MARKER.as_bytes())
+        {
+            let record: Record = serde_json::from_slice(json)
+                .map_err(|_| anyhow!("malformed state ownership receipt"))?;
+            record.validate(self.len)?;
+            let message = record.message()?;
+            (record, message, None)
+        } else if let Some(json) = base.message.strip_prefix(MARKER_V2.as_bytes()) {
+            let record: OwnedRecordV2 = serde_json::from_slice(json)
+                .map_err(|_| anyhow!("malformed state ownership receipt"))?;
+            record.validate(self.len)?;
+            (record.common(), record.message()?, Some(record))
+        } else {
+            return Err(anyhow!("foreign state base commit: owned receipt required"));
+        };
         ensure!(
-            record.message()? == base.message
+            message == base.message
                 && record.path == change.path
                 && record.binding == change.binding
                 && Some(&record.ledger_blob_id) == change.expected_blob_id.as_ref()
@@ -602,7 +762,10 @@ impl Preparation {
             self.lookup(&base.tree, &path)? == record.ledger_blob_id,
             "owned ledger tree/blob mismatch"
         );
-        self.read("blob", &record.ledger_blob_id)?;
+        let ledger = self.read("blob", &record.ledger_blob_id)?;
+        if let Some(record) = v2 {
+            record.validate_ledger(&ledger)?;
+        }
         let parent = self.commit(&record.base_commit)?;
         let time = next_time(parent.time)?;
         ensure!(
@@ -769,6 +932,26 @@ fn prepare(
         create_ref == change.expected_blob_id.is_none(),
         "create-ref must exactly match ledger initialization"
     );
+    match change.operation {
+        StateOperation::Enroll | StateOperation::Reack => ensure!(
+            change.provider_operation.is_none(),
+            "legacy state operation cannot carry provider intent"
+        ),
+        StateOperation::Prepare | StateOperation::MarkUncertain => {
+            let proof = change
+                .provider_operation
+                .as_ref()
+                .ok_or_else(|| anyhow!("state operation requires provider intent"))?;
+            ensure!(
+                !create_ref
+                    && change.expected_blob_id.is_some()
+                    && !change.parser_change_accepted
+                    && operation_uuid(&proof.operation_id)
+                    && digest(&proof.intent_digest),
+                "invalid state operation provider intent"
+            );
+        }
+    }
     let git = GitSession::with_operation(repo, deadline, operation)?;
     let len = repository(&git)?;
     ensure!(
@@ -806,8 +989,10 @@ fn prepare(
         candidate_sha256: change.candidate_sha256.clone(),
         source_commit: change.source_commit.clone(),
         operation: match change.operation {
-            CandidateOperation::Enroll => "enroll",
-            CandidateOperation::Reack => "reack",
+            StateOperation::Enroll => "enroll",
+            StateOperation::Reack => "reack",
+            StateOperation::Prepare => "prepare",
+            StateOperation::MarkUncertain => "mark_uncertain",
         }
         .into(),
         logical_id: change.logical_id.clone(),
@@ -815,7 +1000,30 @@ fn prepare(
         base_commit: change.base_commit.clone(),
         expected_blob_id: change.expected_blob_id.clone(),
     };
-    record.validate(len)?;
+    let message = if let Some(proof) = &change.provider_operation {
+        let record = OwnedRecordV2 {
+            schema_version: "2".into(),
+            state_ref: record.state_ref,
+            path: record.path,
+            binding: record.binding,
+            ledger_blob_id: record.ledger_blob_id,
+            candidate_sha256: record.candidate_sha256,
+            source_commit: record.source_commit,
+            operation: record.operation,
+            logical_id: record.logical_id,
+            parser_change_accepted: record.parser_change_accepted,
+            base_commit: record.base_commit,
+            expected_blob_id: record.expected_blob_id,
+            operation_id: proof.operation_id.clone(),
+            intent_digest: proof.intent_digest.clone(),
+        };
+        record.validate(len)?;
+        record.validate_ledger(&change.candidate_ledger)?;
+        record.message()?
+    } else {
+        record.validate(len)?;
+        record.message()?
+    };
     let path: Vec<_> = change.path.split('/').collect();
     let tree = p.replace(
         Some(&base.tree),
@@ -826,12 +1034,7 @@ fn prepare(
     )?;
     let commit = p.object(
         "commit",
-        commit_bytes(
-            &tree,
-            &change.base_commit,
-            next_time(base.time)?,
-            &record.message()?,
-        ),
+        commit_bytes(&tree, &change.base_commit, next_time(base.time)?, &message),
     )?;
     let tip = current(&p.git, len)?;
     let already = tip.as_deref() == Some(commit.as_str());
@@ -846,7 +1049,11 @@ fn prepare(
     );
     p.git.check()?;
     let receipt = ApplyReceipt {
-        schema_version: "1",
+        schema_version: if change.provider_operation.is_some() {
+            "2"
+        } else {
+            "1"
+        },
         status: if already {
             "already_applied"
         } else {
@@ -867,6 +1074,14 @@ fn prepare(
         publication_ready: false,
         remote_verified: false,
         remote_ref_verified: false,
+        operation_id: change
+            .provider_operation
+            .as_ref()
+            .map(|p| p.operation_id.clone()),
+        intent_digest: change
+            .provider_operation
+            .as_ref()
+            .map(|p| p.intent_digest.clone()),
     };
     Ok((p, receipt))
 }
@@ -950,6 +1165,7 @@ pub(crate) fn apply(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use sha2::Digest;
     use std::{
         os::unix::fs::{PermissionsExt, symlink},
         path::PathBuf,
@@ -1118,7 +1334,7 @@ mod tests {
         fn change(&self) -> PreparedLedgerChange {
             PreparedLedgerChange {
                 candidate_sha256: "a".repeat(64),
-                operation: CandidateOperation::Enroll,
+                operation: StateOperation::Enroll,
                 logical_id: "0123456789abcdef0123456789abcdef".into(),
                 source_commit: self.base.clone(),
                 binding: Binding {
@@ -1132,6 +1348,7 @@ mod tests {
                 path: "state/nested/ledger.json".into(),
                 expected_blob_id: None,
                 candidate_ledger: b"{\"fixture\":1}\n".to_vec(),
+                provider_operation: None,
             }
         }
 
@@ -1140,7 +1357,7 @@ mod tests {
                 base_commit: receipt.commit.clone(),
                 expected_blob_id: Some(receipt.ledger_blob_id.clone()),
                 candidate_sha256: "b".repeat(64),
-                operation: CandidateOperation::Reack,
+                operation: StateOperation::Reack,
                 candidate_ledger: b"{\"fixture\":2}\n".to_vec(),
                 ..self.change()
             }
@@ -1152,6 +1369,79 @@ mod tests {
                 self.base.len(),
             )
             .unwrap()
+        }
+
+        fn pending_change(&self, receipt: &ApplyReceipt) -> PreparedLedgerChange {
+            let mut change = self.update(receipt);
+            change.operation = StateOperation::Prepare;
+            change.logical_id = "11111111-1111-4111-8111-111111111111".into();
+            let source = crate::SourceAck {
+                commit: change.source_commit.clone(),
+                parser_sha256: "b".repeat(64),
+                path: "tasks.md".into(),
+                source_id: "tasks".into(),
+                line: 1,
+                mw_id: "tasks:1:0".into(),
+                git_blob_id: "c".repeat(self.base.len()),
+                source_revision: format!("sha256:{}", "d".repeat(64)),
+                stable_id: None,
+                expected: crate::ExpectedTask {
+                    text: "Ship".into(),
+                    literal_text: "- [ ] Ship due:2026-11-01".into(),
+                    done: false,
+                    due: "2026-11-01".into(),
+                    raw: String::new(),
+                    start: String::new(),
+                    estimate: String::new(),
+                },
+            };
+            let pending = crate::PendingOperation {
+                operation_id: "22222222-2222-4222-8222-222222222222".into(),
+                kind: crate::OperationKind::Create,
+                phase: crate::OperationPhase::Prepared,
+                intended_source: source.clone(),
+                target_event_id: crate::operations::reserved_event_id(
+                    &change.binding,
+                    &change.logical_id,
+                )
+                .unwrap(),
+                base_etag: None,
+                desired_payload_hash: Some(crate::payload_hash(&crate::ProspectiveEvent {
+                    summary: "Ship".into(),
+                    start: crate::CalendarDate {
+                        date: "2026-11-01".into(),
+                    },
+                    end: crate::CalendarDate {
+                        date: "2026-11-02".into(),
+                    },
+                    availability: "free",
+                    transparency: "transparent",
+                })),
+            };
+            change.provider_operation = Some(crate::ProviderOperationProof {
+                operation_id: pending.operation_id.clone(),
+                intent_digest: crate::operations::intent_digest(
+                    &change.binding,
+                    &change.logical_id,
+                    &pending,
+                )
+                .unwrap(),
+            });
+            change.candidate_ledger = serde_json::to_vec(&crate::Ledger {
+                schema_version: "1".into(),
+                binding: change.binding.clone(),
+                source_watermark: source.commit.clone(),
+                entries: vec![crate::LedgerEntry {
+                    logical_id: change.logical_id.clone(),
+                    lifecycle: crate::Lifecycle::Enrolled,
+                    source_ack: source,
+                    provider_ack: None,
+                    pending: Some(pending),
+                    tombstone: None,
+                }],
+            })
+            .unwrap();
+            change
         }
     }
 
@@ -1366,6 +1656,243 @@ mod tests {
     }
 
     #[test]
+    fn v2_pending_receipts_reopen_retry_and_never_rewind() {
+        for format in ["sha1", "sha256"] {
+            let f = Fixture::new(format);
+            let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+            let mut prepare = f.pending_change(&first);
+            // Preparing from a newer snapshot does not rewrite the frozen ack.
+            prepare.source_commit = "d".repeat(f.base.len());
+            let before = snapshot(&f.repo);
+            let checked = verify(&f.repo, STATE_REF, &prepare, false, deadline()).unwrap();
+            assert_eq!(snapshot(&f.repo), before);
+            let prepared = apply(&f.repo, STATE_REF, &prepare, false, deadline()).unwrap();
+            assert_eq!(prepared.commit, checked.commit);
+            assert_eq!(prepared.schema_version, "2");
+            assert!(prepared.operation_id.is_some() && prepared.intent_digest.is_some());
+            let bytes = f.run(&["cat-file", "commit", &prepared.commit], b"");
+            assert!(
+                bytes
+                    .windows(MARKER_V2.len())
+                    .any(|w| w == MARKER_V2.as_bytes())
+            );
+            let candidate = crate::mark_uncertain(&crate::UncertainOptions {
+                binding: prepare.binding.clone(),
+                ledger: crate::LedgerLocation {
+                    repository: f.repo.clone(),
+                    commit: prepared.commit.clone(),
+                    path: prepare.path.clone(),
+                },
+                entry: crate::EntrySelection::LogicalId(prepare.logical_id.clone()),
+                operation_id: prepared.operation_id.clone().unwrap(),
+            })
+            .unwrap();
+            let bytes = serde_json::to_vec(&candidate).unwrap();
+            let candidate_path = f.repo.parent().unwrap().join("candidate.json");
+            fs::write(&candidate_path, &bytes).unwrap();
+            let options = crate::ApplyOptions {
+                source: crate::PreviewOptions {
+                    repository: "/unavailable/source".into(),
+                    commit: candidate.source_commit.clone(),
+                    mw_binary: "/unavailable/mw".into(),
+                },
+                binding: prepare.binding.clone(),
+                ledger_repository: f.repo.clone(),
+                ledger_path: prepare.path.clone(),
+                state_ref: STATE_REF.into(),
+                candidate_path,
+                expected_candidate_sha256: format!("{:x}", sha2::Sha256::digest(&bytes)),
+                create_ref: false,
+                accept_parser_change: false,
+            };
+            let end = deadline();
+            let operation = SourceSession::operation(end).unwrap();
+            let uncertain = crate::approval::validate(&options, end, &operation).unwrap();
+            assert_eq!(uncertain.operation, StateOperation::MarkUncertain);
+            let applied = apply(&f.repo, STATE_REF, &uncertain, false, deadline()).unwrap();
+            let before = snapshot(&f.repo);
+            let retry = crate::apply_candidate(&options).unwrap();
+            assert_eq!(retry.status, "already_applied");
+            assert!(
+                !retry.local_ref_updated
+                    && !retry.publication_ready
+                    && !retry.remote_verified
+                    && !retry.remote_ref_verified
+            );
+            assert!(apply(&f.repo, STATE_REF, &prepare, false, deadline()).is_err());
+            assert_eq!(snapshot(&f.repo), before);
+            // Ownership of a V2 tip can also be read before a legacy operation.
+            verify(&f.repo, STATE_REF, &f.update(&applied), false, deadline()).unwrap();
+        }
+    }
+
+    #[test]
+    fn forged_v2_ownership_receipts_refuse_before_writes() {
+        let f = Fixture::new("sha1");
+        let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+        let change = f.pending_change(&first);
+        let prepared = apply(&f.repo, STATE_REF, &change, false, deadline()).unwrap();
+        let original = f.run(&["cat-file", "commit", &prepared.commit], b"");
+        let split = original.windows(2).position(|w| w == b"\n\n").unwrap();
+        let json = original[split + 2..]
+            .strip_prefix(MARKER_V2.as_bytes())
+            .unwrap();
+        let original_record: serde_json::Value = serde_json::from_slice(json).unwrap();
+        for corruption in [
+            "version",
+            "marker",
+            "operation",
+            "digest_format",
+            "digest_value",
+            "operation_id",
+            "selected_entry",
+            "phase",
+            "parser",
+            "expected_blob",
+            "unknown",
+            "duplicate",
+        ] {
+            let mut record: OwnedRecordV2 =
+                serde_json::from_value(original_record.clone()).unwrap();
+            match corruption {
+                "version" => record.schema_version = "3".into(),
+                "operation" => record.operation = "acknowledge".into(),
+                "digest_format" => record.intent_digest = "a".repeat(64),
+                "digest_value" => record.intent_digest = format!("sha256:{}", "a".repeat(64)),
+                "operation_id" => {
+                    record.operation_id = "33333333-3333-4333-8333-333333333333".into()
+                }
+                "selected_entry" => {
+                    record.logical_id = "33333333-3333-4333-8333-333333333333".into()
+                }
+                "phase" => record.operation = "mark_uncertain".into(),
+                "parser" => record.parser_change_accepted = true,
+                "expected_blob" => record.expected_blob_id = None,
+                "marker" | "unknown" | "duplicate" => {}
+                _ => unreachable!(),
+            }
+            let mut message = record.message().unwrap();
+            match corruption {
+                "marker" => message[MARKER_V2.len() - 3] = b'3',
+                "unknown" | "duplicate" => {
+                    let key = if corruption == "unknown" {
+                        "privateUnknown"
+                    } else {
+                        "operationId"
+                    };
+                    let extra = format!(",\"{key}\":\"private-value\"");
+                    message.splice(message.len() - 2..message.len() - 2, extra.bytes());
+                }
+                _ => {}
+            }
+            let mut bytes = original[..split + 2].to_vec();
+            bytes.extend(message);
+            let forged = f.write("commit", &bytes);
+            f.run(&["update-ref", STATE_REF, &forged], b"");
+            let mut next = f.update(&prepared);
+            next.base_commit = forged;
+            let before = snapshot(&f.repo);
+            let error = apply(&f.repo, STATE_REF, &next, false, deadline()).unwrap_err();
+            assert!(!format!("{error:#}").contains("private"), "{corruption}");
+            assert_eq!(snapshot(&f.repo), before, "{corruption}");
+        }
+    }
+
+    #[test]
+    fn invalid_operation_proofs_and_pending_bindings_refuse_before_writes() {
+        let f = Fixture::new("sha1");
+        let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+        for corruption in [
+            "missing",
+            "uuid",
+            "digest",
+            "other_digest",
+            "operation_id",
+            "phase",
+            "entry",
+            "parser",
+            "initialize",
+            "legacy",
+            "event",
+            "payload",
+            "delete",
+        ] {
+            let mut change = f.pending_change(&first);
+            match corruption {
+                "missing" => change.provider_operation = None,
+                "uuid" => {
+                    change.provider_operation.as_mut().unwrap().operation_id = "invalid".into()
+                }
+                "digest" => {
+                    change.provider_operation.as_mut().unwrap().intent_digest = "a".repeat(64)
+                }
+                "other_digest" => {
+                    change.provider_operation.as_mut().unwrap().intent_digest =
+                        format!("sha256:{}", "a".repeat(64))
+                }
+                "operation_id" => {
+                    change.provider_operation.as_mut().unwrap().operation_id =
+                        "33333333-3333-4333-8333-333333333333".into()
+                }
+                "phase" => change.operation = StateOperation::MarkUncertain,
+                "entry" => change.logical_id = "33333333-3333-4333-8333-333333333333".into(),
+                "parser" => change.parser_change_accepted = true,
+                "initialize" => change.expected_blob_id = None,
+                "legacy" => change.operation = StateOperation::Reack,
+                "event" | "payload" | "delete" => {
+                    let mut ledger =
+                        crate::ledger::decode(&change.candidate_ledger, &change.binding).unwrap();
+                    let pending = ledger.entries[0].pending.as_mut().unwrap();
+                    match corruption {
+                        "event" => pending.target_event_id = "abcde12345".into(),
+                        "payload" => {
+                            pending.desired_payload_hash =
+                                Some(format!("sha256:{}", "e".repeat(64)))
+                        }
+                        "delete" => {
+                            pending.kind = crate::OperationKind::Delete;
+                            pending.desired_payload_hash = None;
+                            pending.base_etag = Some("etag".into());
+                        }
+                        _ => unreachable!(),
+                    }
+                    change.provider_operation.as_mut().unwrap().intent_digest =
+                        crate::operations::intent_digest(
+                            &change.binding,
+                            &change.logical_id,
+                            pending,
+                        )
+                        .unwrap();
+                    if corruption == "delete" {
+                        let entry = &mut ledger.entries[0];
+                        entry.lifecycle = crate::Lifecycle::Active;
+                        entry.provider_ack = Some(crate::ProviderAck {
+                            event_id: entry.pending.as_ref().unwrap().target_event_id.clone(),
+                            etag: "etag".into(),
+                            last_payload_hash: format!("sha256:{}", "e".repeat(64)),
+                        });
+                    }
+                    change.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before = snapshot(&f.repo);
+            assert!(
+                apply(
+                    &f.repo,
+                    STATE_REF,
+                    &change,
+                    corruption == "initialize",
+                    deadline()
+                )
+                .is_err(),
+                "{corruption}"
+            );
+            assert_eq!(snapshot(&f.repo), before, "{corruption}");
+        }
+    }
+
+    #[test]
     fn initialize_reack_exact_retry_and_verify_are_deterministic_and_read_only() {
         for format in ["sha1", "sha256"] {
             let f = Fixture::new(format);
@@ -1455,6 +1982,8 @@ mod tests {
                 before[Path::new("config")].1
             );
             let receipt = serde_json::to_string(&updated).unwrap();
+            assert!(receipt.starts_with("{\"schemaVersion\":\"1\","));
+            assert!(!receipt.contains("operationId") && !receipt.contains("intentDigest"));
             assert!(receipt.contains("\"remoteRefVerified\":false"));
             assert!(!receipt.contains("fixture\\\":2"));
         }

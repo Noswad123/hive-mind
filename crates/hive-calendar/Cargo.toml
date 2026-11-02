@@ -8,11 +8,14 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 getrandom.workspace = true
+hive-core = { path = "../hive-core" }
 libc.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 signal-hook.workspace = true
 tempfile.workspace = true
 time.workspace = true
+zeroize.workspace = true

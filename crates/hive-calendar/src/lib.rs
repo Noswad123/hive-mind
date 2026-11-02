@@ -1,5 +1,6 @@
 //! Credential-free Calendar planning and explicitly approved local ledger persistence.
-//! No provider transport, credentials, network synchronization, or automatic source edits.
+//! The private HTTP adapter is dormant: no public provider activation, credential
+//! wiring, network synchronization, or automatic source edits.
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
@@ -7,7 +8,15 @@ use serde::Deserialize;
 
 mod approval;
 mod candidates;
+// Deliberately unwired: production dispatch authority and credential wiring are
+// separate activation gates. The private adapter is exercised through loopback tests.
+#[allow(
+    dead_code,
+    reason = "Calendar transport is intentionally not activated"
+)]
+mod calendar_transport;
 mod ledger;
+mod operations;
 mod planner;
 mod projection;
 mod source;
@@ -17,6 +26,10 @@ pub use candidates::{CandidateBase, CandidateOperation, LedgerCandidate};
 pub use ledger::{
     Binding, ExpectedTask, Ledger, LedgerEntry, Lifecycle, OperationKind, OperationPhase,
     PendingOperation, ProviderAck, RemoteDisposition, SourceAck, Tombstone, payload_hash,
+};
+pub use operations::{
+    AckSimulation, ObservationPayload, OperationBase, OperationCandidate, OperationTransition,
+    OperatorObservation, intent_digest, reserved_event_id,
 };
 pub use planner::{EntryPlan, LedgerBasis, Plan, PlanCounts, PlanDecision, UnenrolledObservation};
 pub use projection::{
@@ -112,6 +125,65 @@ pub fn reack(options: &ReackOptions) -> Result<LedgerCandidate> {
     candidates::reack(options)
 }
 
+#[derive(Debug)]
+pub struct PrepareOptions {
+    pub source: PreviewOptions,
+    pub binding: Binding,
+    pub ledger: LedgerLocation,
+    pub entry: EntrySelection,
+}
+
+/// Monotonic recovery evidence; it does not require today's note or parser to exist.
+#[derive(Debug)]
+pub struct UncertainOptions {
+    pub binding: Binding,
+    pub ledger: LedgerLocation,
+    pub entry: EntrySelection,
+    pub operation_id: String,
+}
+
+/// An explicitly unverified operator assertion. Ordinary apply cannot persist its result.
+#[derive(Debug)]
+pub struct SimulationOptions {
+    pub binding: Binding,
+    pub ledger: LedgerLocation,
+    pub entry: EntrySelection,
+    pub operation_id: String,
+    pub observation_path: PathBuf,
+    pub expected_observation_sha256: String,
+}
+
+pub fn prepare_operation(options: &PrepareOptions) -> Result<OperationCandidate> {
+    operations::prepare(options)
+}
+
+pub fn mark_uncertain(options: &UncertainOptions) -> Result<OperationCandidate> {
+    operations::mark_uncertain(options)
+}
+
+pub fn simulate_acknowledgement(options: &SimulationOptions) -> Result<AckSimulation> {
+    operations::simulate_ack(options)
+}
+
+/// State commit operations, separate from the frozen V1 enrollment-candidate vocabulary.
+#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StateOperation {
+    Enroll,
+    Reack,
+    Prepare,
+    MarkUncertain,
+}
+
+impl From<CandidateOperation> for StateOperation {
+    fn from(operation: CandidateOperation) -> Self {
+        match operation {
+            CandidateOperation::Enroll => Self::Enroll,
+            CandidateOperation::Reack => Self::Reack,
+        }
+    }
+}
+
 /// Explicit local-only apply intent. Nothing infers the authoritative remote ref.
 #[derive(Debug)]
 pub struct ApplyOptions {
@@ -162,7 +234,7 @@ pub fn apply_candidate(options: &ApplyOptions) -> Result<ApplyReceipt> {
 /// Internal handoff: validated transition and canonical ledger bytes, not untrusted JSON.
 pub(crate) struct PreparedLedgerChange {
     pub candidate_sha256: String,
-    pub operation: CandidateOperation,
+    pub operation: StateOperation,
     pub logical_id: String,
     pub source_commit: String,
     pub binding: Binding,
@@ -171,6 +243,12 @@ pub(crate) struct PreparedLedgerChange {
     pub path: String,
     pub expected_blob_id: Option<String>,
     pub candidate_ledger: Vec<u8>,
+    pub provider_operation: Option<ProviderOperationProof>,
+}
+
+pub(crate) struct ProviderOperationProof {
+    pub operation_id: String,
+    pub intent_digest: String,
 }
 
 pub(crate) struct CommittedSnapshot {
