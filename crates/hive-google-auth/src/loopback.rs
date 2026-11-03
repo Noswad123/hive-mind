@@ -11,7 +11,7 @@ use subtle::ConstantTimeEq;
 
 use crate::google::{AUTHORIZATION_ENDPOINT, validate_client_id};
 use crate::{
-    AuthError, AuthorizationFlow, AuthorizationGrant, ClientConfig, REQUIRED_SCOPES, Result,
+    AuthError, AuthProfile, AuthorizationFlow, AuthorizationGrant, ClientConfig, Result,
     SecretString,
 };
 
@@ -86,6 +86,7 @@ fn isolated_launch_command(program: &str) -> std::process::Command {
 }
 
 pub struct LoopbackFlow {
+    profile: AuthProfile,
     browser: Box<dyn BrowserLauncher>,
     timeout: Duration,
     connection_timeout: Duration,
@@ -99,7 +100,12 @@ impl Default for LoopbackFlow {
 
 impl LoopbackFlow {
     pub fn new() -> Self {
+        Self::for_profile(AuthProfile::TasksReadonly)
+    }
+
+    pub fn for_profile(profile: AuthProfile) -> Self {
         Self {
+            profile,
             browser: Box::new(SystemBrowser),
             timeout: Duration::from_secs(300),
             connection_timeout: Duration::from_secs(2),
@@ -108,6 +114,10 @@ impl LoopbackFlow {
 }
 
 impl AuthorizationFlow for LoopbackFlow {
+    fn profile(&self) -> AuthProfile {
+        self.profile
+    }
+
     fn authorize(&self, client: &ClientConfig) -> Result<AuthorizationGrant> {
         validate_client_id(&client.client_id)?;
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -132,7 +142,7 @@ impl AuthorizationFlow for LoopbackFlow {
             ("client_id", client.client_id.as_str()),
             ("redirect_uri", redirect_uri.as_str()),
             ("response_type", "code"),
-            ("scope", &REQUIRED_SCOPES.join(" ")),
+            ("scope", &self.profile.scopes().join(" ")),
             ("state", state.as_str()),
             ("code_challenge", challenge.as_str()),
             ("code_challenge_method", "S256"),

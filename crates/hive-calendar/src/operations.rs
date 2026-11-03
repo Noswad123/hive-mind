@@ -709,7 +709,7 @@ fn handoff(
         path: replayed.base.path,
         expected_blob_id: Some(replayed.base.git_blob_id),
         candidate_ledger: bytes,
-        provider_operation: Some(ProviderOperationProof {
+        proof: crate::LedgerChangeProof::Intent(ProviderOperationProof {
             operation_id: replayed.operation_id,
             intent_digest: replayed.intent_digest,
         }),
@@ -1812,7 +1812,9 @@ mod tests {
         .unwrap();
         assert_eq!(change.operation, StateOperation::Prepare);
         assert!(!change.parser_change_accepted);
-        let proof = change.provider_operation.unwrap();
+        let crate::LedgerChangeProof::Intent(proof) = &change.proof else {
+            panic!("expected an intent proof");
+        };
         assert_eq!(proof.operation_id, OPERATION_ID);
         assert_eq!(proof.intent_digest, candidate.intent_digest);
         assert_eq!(
@@ -2212,10 +2214,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(change.operation, StateOperation::MarkUncertain);
-        assert_eq!(
-            change.provider_operation.as_ref().unwrap().operation_id,
-            OPERATION_ID
-        );
+        let crate::LedgerChangeProof::Intent(proof) = &change.proof else {
+            panic!("expected an intent proof");
+        };
+        assert_eq!(proof.operation_id, OPERATION_ID);
         assert_eq!(
             change.source_commit,
             prepared.candidate_ledger.entries[0].source_ack.commit
@@ -2328,10 +2330,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.candidate_ledger, second.candidate_ledger);
-        assert_eq!(
-            first.provider_operation.as_ref().unwrap().operation_id,
-            candidate.operation_id
-        );
+        let crate::LedgerChangeProof::Intent(proof) = &first.proof else {
+            panic!("expected an intent proof");
+        };
+        assert_eq!(proof.operation_id, candidate.operation_id);
         assert_eq!(fixture.git(&["rev-parse", "HEAD"]), location.commit);
         assert_eq!(fixture.git(&["status", "--porcelain"]), "");
         // Parser drift cannot be silently accepted for prepare.

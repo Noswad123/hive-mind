@@ -477,6 +477,7 @@ provider/credentials/state operations, Git writes, or installed-binary changes.
 
 ### Calendar private HTTP adapter checkpoint: 2026-11-02
 
+Historical adapter-only checkpoint, retained separately from private ACK below.
 **Dormant private HTTP adapter code + loopback-test milestone DONE, not an actual
 publisher, production authentication proof, or activation.** See
 [adapter contract and source links](product-architecture-roadmap.md#calendar-private-http-adapter)
@@ -547,12 +548,203 @@ Linux is explicitly deferred until later before deployment. This docs-only pass
 performs source/diff reads and Git diff whitespace checks only, no tests/builds,
 network/services, provider/credentials/state operations or Git writes.
 
-Next work remains **pending**: trusted in-process result -> durable ACK validation,
+At this historical checkpoint next work was trusted in-process result -> durable ACK validation,
 receipts/recovery; exclusive authoritative dispatch ownership; credential/grant
 wiring; hosted CI/remote CAS; cost cap; Linux later before deployment and explicit
 activation approvals. Remote API and Git persistence are not one transaction. No
 public native-publish command or activation is delivered. Private content remains
 no-log/no-auto-upload; the user's no-Atlassian-upload boundary is unchanged.
+
+### Calendar private ACK checkpoint: 2026-11-02
+
+Historical ACK checkpoint, retained separately from the coordinator below.
+**PRIVATE in-process ACK -> local CAS code/tests DONE, NOT activation or production
+approval.** See the [source-linked ACK contract](product-architecture-roadmap.md#calendar-private-ack-persistence)
+and [brief current boundary](../README.md#calendar-private-ack-persistence-dormant).
+Older **430/415/389/363/339/303** checkpoints above remain historical.
+
+Actual macOS validation executed by **this main implementation session**, not the
+user and not rerun for this documentation pass:
+
+- ACK-checkpoint **FINAL GREEN**: `cargo test --workspace --locked --offline`, DEFAULT
+  parallel, **444 normal PASS / 13 ignored**. This is NOT a serial result.
+- Calendar: **159 normal passed / 3 ignored**, default parallel. Strict Calendar
+  all-targets Clippy with `-D warnings`, formatting and build passed. No claim that
+  the four historical main-CLI warnings were fixed.
+- All **six explicit real-MW compatibility gates RERAN and passed earlier in this
+  session**: CLI apply x2, candidate, plan, preview and source-reader. This updates
+  the older adapter checkpoint's not-rerun boundary; it does not rewrite its history.
+- New ACK writer tests use **SYNTHETIC trusted handoffs and TEMP repositories only**,
+  NOT the real Google authentication pipeline. Actual HTTP loopback admission
+  rejection is covered, without relabeling loopback evidence as Google.
+- Pure ACK create/update in both Prepared/Uncertain phases, unavailable frozen
+  notes/parser recovery, identity/base/phase/source/mapping/evidence tamper, and
+  preservation of current old source ACK rather than intendedSource all passed.
+- SHA-1/SHA-256 V3 state CAS, exact retry after injected post-CAS unknown outcome,
+  refusal after later advancement, V3 Source/Intent continuation floors and reader
+  compatibility passed. V1/V2 goldens remain unchanged.
+- Focused review found **no P1/P2 for private local ACK under the dedicated bare,
+  exclusive-administration assumption**, not production approval.
+
+#### Test stability and failed runs
+
+The initial full serial run failed on the pre-existing capture 100 ms output-cap
+race: timeout won instead of the cap. The **test-only output-cap case** now uses
+2 seconds; the separate 100 ms timed-out case remains. Production capture Runner
+did not change. Do not present that initial serial run as green.
+
+Later full default AND serial runs hit loopback `TransientUnavailable` before
+complete Userinfo, with request counts zero. Fake HTTP server handling was corrected
+to record only complete headers/body and not consume a reply on an empty request.
+Fixtures use 10-second stream timeouts and **one mutex per HTTP test**, not nested
+per-server locks. A `cfg(test)` shared `OnceLock` blocking client and pre-listener
+warmup remove per-test runtime churn. Production HTTP configuration is unchanged
+by this test pool. Error classes, request-count assertions and retries were NOT
+relaxed to get a pass.
+
+**Root cause is NOT established.** Diagnostics reproduced accepted=1/complete=0;
+the connection ended during cleanup, not server lifetime expiry. The slow-client-
+build theory did not reproduce. These observations are not a proven causal fix.
+After pooling, the bounded-response test passed **10 consecutive times**; all
+**16 HTTP tests including ACK passed twice serially**, plus a parallel module pass;
+then the full Calendar crate passed 159 normal in parallel and the final MAIN
+workspace run passed 444 normal in default parallel. **No full serial 444 pass is
+claimed: earlier full serial runs FAILED.**
+
+#### Delivered Boundary
+
+Pre-HTTP `PinnedContext` retains exact committed base/path/blob, old ledger and full
+pending including phase; it attaches `contextDigest` to intent and HTTP-sealed
+result. Admission matches that basis, namespace/IDs/intent/event/hash/strong ETag
+and immutable Google origin. Actual loopback origin is always rejected for durable
+ACK. `LedgerChangeProof::Source | Intent | Acknowledgement(SealedAckProof)` separates
+authority, with a private ACK constructor. Audits/JSON cannot become authority.
+Ordinary public apply still accepts only V1 source/V2 intent candidates: no new CLI
+ACK/publish command, raw authenticated JSON or public API.
+
+Frozen create/update ACK supports both phases without source/parser/current-task
+eligibility. Only selected Active/provider ACK/result/pending None changes;
+CURRENT old source ACK, watermark/order/tombstones/unselected evidence stay intact.
+GET cause `ReconciledObservation` is not worker-dispatch proof. Borrowed
+`PinnedAckTransaction` retains original base/result through errors, reconstructing
+the same commit from OLD base even if latest pending cleared. Exact retry succeeds;
+later advancement refuses, never rebases. Fixed-ref bare/no-worktree/exclusive-admin,
+CAS and cancellation policies remain unchanged.
+
+V3 terminal ownership/apply receipts validate OLD parent ledger/full pending phase,
+result and exact new reduction. Following Source/Intent writes remain V3, preserving
+the minimum-reader floor. Audit/provenance floors distinguish GoogleAuthenticated
+from TEST-ONLY SyntheticFixture. Test factories force Synthetic and recompute the
+digest; all synthetic continuations retain that floor, even after pending clears.
+Production excludes the variant and rejects fixture branches. Audit digests and
+Git receipts are NOT cryptographic signatures. Generic publication/remote/ref
+verification stays false: observation cause/provenance is not current remote sync.
+
+Opaque child `RemoteDispatchAuthority` + `FreshAuthoritativeView` have no production
+constructors/Serde/Clone; mint consumes matching head/path/blob/context/owner nonce/
+intent/origin/Prepared evidence. Google permits require authority basis; test
+factories are loopback-only. This is NOT an actual remote lease/fencing protocol:
+local CAS/nonces/freshness/single-use values do not stop paused old cross-host
+workers, and no expiry takeover exists. Safe remote ownership is UNIMPLEMENTED;
+production minting remains unavailable.
+
+Remaining gates: remote Git authoritative ownership/fencing, real provider grants/
+credential wiring, private coordinator/CLI integration, hosted push trigger plus
+remote CAS, cost hard stop, normal-user UI/activation approval and Linux later before
+deployment. No automatic Calendar writes now. No new API credentials, private queue,
+worker/binary/settings changes. No actual notes/source/refs, Google/Keychain,
+services/deployment, Git commit/push, secret/billing or Atlassian changes occurred;
+implementation writes were TEMP-only. Linux is explicitly deferred: no probes,
+VMs or targets. This docs pass only inspects source/diffs and checks whitespace,
+without tests/builds/network/services or state operations.
+
+### Calendar private coordinator checkpoint: 2026-11-02
+
+**PRIVATE CREATOR-ONLY COORDINATOR SEAM code/tests DONE, not hosted execution,
+production dispatch or a production-ready publisher.** See the
+[source-linked protocol and integration gap](product-architecture-roadmap.md#calendar-private-creator-only-coordinator)
+and [brief boundary](../README.md#calendar-private-coordinator-dormant).
+The sealed AuthoritativeState backend has no production implementation/constructor;
+the receipt-consuming dispatch bridge cannot supply production authority. No new
+public export/CLI, credential provider/grant, workflow or full executor is wired.
+
+Latest **macOS validation executed in the implementation session**, not rerun
+in this docs-only pass:
+
+- `cargo test --workspace --locked --offline -- --test-threads=4`:
+  **464 normal PASS / 13 ignored**. This is a four-thread run, not default or serial.
+- Calendar: **179 normal PASS / 3 ignored**. New coordinator: **20 tests passed
+  serially**, including the final post-mint root cancellation/expiry hardening test.
+- Earlier transport-target subset: **43 tests passed serially with 19 coordinator
+  tests**. All current 44 transport tests were included in the full workspace run;
+  no separate 44-test serial target run was performed. Serial coordinator coverage
+  is 20.
+- Strict Calendar all-targets Clippy with `-D warnings`, formatting and build passed.
+  Main CLI `clippy --no-deps` passed with four existing legacy warnings. No strict
+  main-CLI warning-free result is claimed.
+- The **six real-MW gate passes are historical 444-checkpoint evidence**, NOT rerun
+  for this coordinator slice. No new MW gate was added. Historical 444 default-
+  parallel, 430/415/389 serial results and their failed-run/stability limits above
+  remain intact; none is reattributed to this slice or the user.
+- Focused review readiness is for the **private protocol**, not a publisher.
+  Tests cover root cancel AND expired Ready discard after CPU mint, receipt
+  consumption and next-invocation recovery-only/no new publication.
+
+Delivered protocol proof uses only `cfg(test)` in-memory and owned TEMP bare
+authoritative adapters plus a separate worker-local bare repository. Bounded local
+Git packs transfer objects; actual atomic `git update-ref NEW EXPECTED_OLD` performs
+the authoritative compare, not an ordinary push. The fixture checks actual H1
+commit/blob and sole parent H0, plus exact single prepare with no old pending,
+valid frozen sourceAck/payload and unchanged source/provider ACKs, watermark,
+tombstones, order and unrelated evidence. Source eligibility remains delegated to
+the preparer, not fresh-note validation by the coordinator.
+
+Only fresh successful exact H0 -> H1 CAS in the SAME invocation mints an opaque
+move-only FreshCas receipt. Consume it once with invocation nonce and exact latest
+H1 head/path/blob/binding/authorityId/origin to yield one intent-bound permit. Any
+existing Prepared OR Uncertain pending anywhere in the binding returns RecoverOnly
+before staging/publication. Own old head, same-job rerun, copied nonce, local
+ApplyReceipt, `already_applied`, logs and matching H1 readback cannot acquire.
+Two creators at H0 have at most one CAS winner/permit. Lost CAS reply, even with
+own-H1 readback, is recovery-only. Missing/stale/advanced/non-ABA rollback heads
+fail without rewind; basis/nonce/origin mismatches refuse. A paused creator may
+make its late first attempt, but another invocation never writes. GET 404/410
+recovery records two GETs (Userinfo/event), zero mutations, and no new acquisition.
+No expiry/steal/reset/reprepare-pending/blind-retry route exists.
+
+Root checks after CAS/latest view AND after CPU authority mint discard Ready if
+cancelled/expired as PublicationUnknown; the consumed receipt cannot retry, and
+the next invocation sees pending RecoverOnly. Caller MUST check root before HTTP;
+this is not atomic revocation. `InvocationOutcome::Ready` returns an **H1 policy
+pin, not H0 and not a claimed local repository** (`PathBuf::default()`). The future
+worker MUST materialize/verify H1 and load actual local PinnedContext with a real
+repository BEFORE HTTP/durable ACK. This slice is NOT the full HTTP + local ACK +
+remote publication executor; no production-ready integration claim is made.
+
+ACK publication is a separate policy stage with NO production AckPublication
+builder. Completed requires confirmed exact authoritative ACK CAS, not local ACK
+objects, unknown or conflict. Root cancellation after publication is unknown.
+Synthetic V3 ACK local evidence stays Synthetic, never Google; actual Loopback
+results still fail private ACK admission. Lost ACK reply may mean H2 committed and
+pending cleared: unknown does NOT guarantee unchanged pending. No repeated provider
+write is authorized; actual remote ACK readback/recovery is not implemented.
+
+Local CAS/nonce/latest view is NOT remote lease/fencing/exactly-once. Git ABA/admin
+rewind is out of scope, requiring cooperative writers/exclusive admin and later
+remote controls. A separately reviewed actual fixed-identity remote CAS backend
+must prove exact expected OLD in a server-atomic transaction; unconditional REST
+ref update, ordinary FF push or readback cannot substitute. Remaining gates also
+include full worker/materialized pin/credential grant, authoritative ACK recovery,
+queue/dispatch policy operations, source-policy UI, hosted workflow, pinned Linux
+later, account included usage/paid-overage hard stop and explicit activation approval.
+
+All implementation HTTP was loopback-only; all coordinator Git writes were TEMP
+bare fixtures. No actual GitHub/Google/credentials/user state, notes/source/refs,
+installation, capture worker, services, CI/workflow, pushes, secrets or billing
+changed; no paid service provisioned. Linux is explicitly **DEFERRED**, with no
+probes, VMs or target installs. This docs pass performs only source/diff inspection
+and `git diff --check`, no tests/builds/network/services or state operations.
+Private output remains no-log/no-upload: no Atlassian uploads or upload offers.
 
 ## Build targets
 

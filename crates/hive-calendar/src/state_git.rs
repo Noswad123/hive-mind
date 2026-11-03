@@ -14,7 +14,8 @@ use anyhow::{Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Binding, PreparedLedgerChange, StateOperation,
+    Binding, LedgerChangeProof, PreparedLedgerChange, StateOperation,
+    calendar_transport::ack::{self, AckAudit, AckCause, AckOrigin},
     source::{GitSession, SourceSession},
 };
 
@@ -22,6 +23,7 @@ const STATE_REF: &str = "refs/heads/hive-calendar-state";
 const MARKER: &str = "hive-calendar-state v1\n\n";
 // Intentional upgrade boundary: V1-only clients must reject a V2-owned tip.
 const MARKER_V2: &str = "hive-calendar-state v2\n\n";
+const MARKER_V3: &str = "hive-calendar-state v3\n\n";
 const IDENTITY: &str = "Hive Calendar <hive-calendar@localhost>";
 // Individual objects fit the existing transport's input bound; the entire
 // visited tree graph (including reconstructed objects) is capped separately.
@@ -54,10 +56,16 @@ pub struct ApplyReceipt {
     pub operation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intent_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ack_cause: Option<AckCause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance_floor: Option<AckOrigin>,
 }
 
 // Field order, marker, JSON encoding and final LF are the v1 wire format.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Record {
     schema_version: String,
@@ -72,6 +80,255 @@ struct Record {
     parser_change_accepted: bool,
     base_commit: String,
     expected_blob_id: Option<String>,
+}
+
+// V3 is a reader boundary, including for later source/intent continuations.
+// These are local ownership receipts, not signatures or live authentication.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedRecordV3 {
+    schema_version: String,
+    state_ref: String,
+    path: String,
+    binding: Binding,
+    ledger_blob_id: String,
+    candidate_sha256: String,
+    source_commit: String,
+    operation: String,
+    logical_id: String,
+    parser_change_accepted: bool,
+    base_commit: String,
+    expected_blob_id: Option<String>,
+    proof: RecordProof,
+    provenance_floor: AckOrigin,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", deny_unknown_fields)]
+enum RecordProof {
+    Source,
+    Intent(IntentRecord),
+    Acknowledgement(Box<AckAudit>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IntentRecord {
+    operation_id: String,
+    intent_digest: String,
+}
+
+impl OwnedRecordV3 {
+    fn new(record: Record, proof: RecordProof, provenance_floor: AckOrigin) -> Self {
+        Self {
+            schema_version: "3".into(),
+            state_ref: record.state_ref,
+            path: record.path,
+            binding: record.binding,
+            ledger_blob_id: record.ledger_blob_id,
+            candidate_sha256: record.candidate_sha256,
+            source_commit: record.source_commit,
+            operation: record.operation,
+            logical_id: record.logical_id,
+            parser_change_accepted: record.parser_change_accepted,
+            base_commit: record.base_commit,
+            expected_blob_id: record.expected_blob_id,
+            proof,
+            provenance_floor,
+        }
+    }
+
+    fn common(&self) -> Record {
+        Record {
+            schema_version: "1".into(),
+            state_ref: self.state_ref.clone(),
+            path: self.path.clone(),
+            binding: self.binding.clone(),
+            ledger_blob_id: self.ledger_blob_id.clone(),
+            candidate_sha256: self.candidate_sha256.clone(),
+            source_commit: self.source_commit.clone(),
+            operation: self.operation.clone(),
+            logical_id: self.logical_id.clone(),
+            parser_change_accepted: self.parser_change_accepted,
+            base_commit: self.base_commit.clone(),
+            expected_blob_id: self.expected_blob_id.clone(),
+        }
+    }
+
+    fn message(&self) -> Result<Vec<u8>> {
+        let mut bytes = MARKER_V3.as_bytes().to_vec();
+        bytes.extend(serde_json::to_vec(self)?);
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    fn intent_record(&self, proof: &IntentRecord) -> OwnedRecordV2 {
+        OwnedRecordV2::new(self.common(), &proof.operation_id, &proof.intent_digest)
+    }
+
+    fn validate(&self, len: usize) -> Result<()> {
+        let mut common = self.common();
+        common.operation = "enroll".into();
+        common.validate(len)?;
+        ensure!(
+            self.schema_version == "3" && self.expected_blob_id.is_some(),
+            "invalid V3 ownership receipt"
+        );
+        match &self.proof {
+            RecordProof::Source => ensure!(
+                matches!(self.operation.as_str(), "enroll" | "reack"),
+                "source proof operation mismatch"
+            ),
+            RecordProof::Intent(proof) => self.intent_record(proof).validate(len)?,
+            RecordProof::Acknowledgement(audit) => {
+                ack::validate_audit(audit)?;
+                ensure!(
+                    self.operation == "acknowledge"
+                        && !self.parser_change_accepted
+                        && audit.binding == self.binding
+                        && audit.base_commit == self.base_commit
+                        && audit.path == self.path
+                        && Some(&audit.old_blob_id) == self.expected_blob_id.as_ref()
+                        && audit.logical_id == self.logical_id
+                        && audit.evidence_digest.strip_prefix("sha256:")
+                            == Some(self.candidate_sha256.as_str())
+                        && audit.old_pending.intended_source.commit == self.source_commit,
+                    "ACK ownership receipt mismatch"
+                );
+                ensure!(
+                    self.provenance_floor
+                        == inherited_floor(Some(self.provenance_floor), Some(audit.origin)),
+                    "ACK provenance floor mismatch"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_transition(&self, old: &[u8], new: &[u8]) -> Result<()> {
+        if let RecordProof::Acknowledgement(audit) = &self.proof {
+            return ack::validate_transition(old, new, audit);
+        }
+        let mut before = crate::ledger::decode(old, &self.binding)?;
+        let after = crate::ledger::decode(new, &self.binding)?;
+        let index = before
+            .entries
+            .iter()
+            .position(|e| e.logical_id == self.logical_id);
+        let entry = after
+            .entries
+            .iter()
+            .find(|e| e.logical_id == self.logical_id)
+            .ok_or_else(|| anyhow!("V3 selected entry missing"))?;
+        match &self.proof {
+            RecordProof::Intent(proof) => {
+                self.intent_record(proof).validate_ledger(new)?;
+                if self.operation == "prepare" {
+                    ensure!(
+                        before.entries.iter().all(|e| e.pending.is_none()),
+                        "V3 prepare with pending intent"
+                    );
+                }
+                let index = index.ok_or_else(|| anyhow!("V3 intent base entry missing"))?;
+                let pending = entry
+                    .pending
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("V3 pending intent missing"))?;
+                let prior = &mut before.entries[index];
+                if self.operation == "prepare" {
+                    ensure!(
+                        prior.pending.is_none()
+                            && prior.tombstone.is_none()
+                            && prior.source_ack == pending.intended_source,
+                        "V3 prepare basis mismatch"
+                    );
+                    match (&prior.lifecycle, &prior.provider_ack, pending.kind) {
+                        (crate::Lifecycle::Enrolled, None, crate::OperationKind::Create) => {
+                            ensure!(pending.base_etag.is_none(), "V3 create etag mismatch")
+                        }
+                        (crate::Lifecycle::Active, Some(ack), crate::OperationKind::Update) => {
+                            ensure!(
+                                pending.target_event_id == ack.event_id
+                                    && pending.base_etag.as_ref() == Some(&ack.etag)
+                                    && pending.desired_payload_hash.as_ref()
+                                        != Some(&ack.last_payload_hash),
+                                "V3 update basis mismatch"
+                            )
+                        }
+                        _ => return Err(anyhow!("V3 prepare lifecycle mismatch")),
+                    }
+                    prior.pending = Some(pending.clone());
+                } else {
+                    let old_pending = prior
+                        .pending
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("V3 uncertain base intent missing"))?;
+                    ensure!(
+                        old_pending.phase == crate::OperationPhase::Prepared,
+                        "V3 uncertain base phase mismatch"
+                    );
+                    old_pending.phase = crate::OperationPhase::Uncertain;
+                }
+            }
+            RecordProof::Source => {
+                if self.operation == "enroll" {
+                    ensure!(
+                        !self.parser_change_accepted
+                            && before.entries.iter().all(|e| e.pending.is_none()),
+                        "V3 enrollment with pending intent or parser acceptance"
+                    );
+                    ensure!(
+                        index.is_none()
+                            && entry.lifecycle == crate::Lifecycle::Enrolled
+                            && entry.provider_ack.is_none()
+                            && entry.pending.is_none()
+                            && entry.tombstone.is_none(),
+                        "V3 enrollment mismatch"
+                    );
+                    before.entries.push(entry.clone());
+                } else {
+                    let index = index.ok_or_else(|| anyhow!("V3 reack base entry missing"))?;
+                    ensure!(
+                        before.entries[index].lifecycle != crate::Lifecycle::Retired
+                            && before.entries[index].pending.is_none(),
+                        "V3 retired or pending source change"
+                    );
+                    ensure!(
+                        self.parser_change_accepted
+                            == (before.entries[index].source_ack.parser_sha256
+                                != entry.source_ack.parser_sha256),
+                        "V3 parser acceptance mismatch"
+                    );
+                    before.entries[index].source_ack = entry.source_ack.clone();
+                }
+                ensure!(
+                    entry.source_ack.commit == self.source_commit
+                        && after.source_watermark == self.source_commit,
+                    "V3 source commit mismatch"
+                );
+                before.source_watermark = after.source_watermark.clone();
+            }
+            RecordProof::Acknowledgement(_) => unreachable!(),
+        }
+        ensure!(
+            before == after,
+            "V3 transition changed unrelated ledger state"
+        );
+        Ok(())
+    }
+}
+
+fn inherited_floor(parent: Option<AckOrigin>, origin: Option<AckOrigin>) -> AckOrigin {
+    // SyntheticFixture does not exist in production: serde rejects that tag in
+    // ACK audits AND continuation floors, even after the pending intent is gone.
+    #[cfg(test)]
+    if matches!(parent, Some(AckOrigin::SyntheticFixture))
+        || matches!(origin, Some(AckOrigin::SyntheticFixture))
+    {
+        return AckOrigin::SyntheticFixture;
+    }
+    let _ = (parent, origin);
+    AckOrigin::GoogleAuthenticated
 }
 
 impl Record {
@@ -123,6 +380,25 @@ struct OwnedRecordV2 {
 }
 
 impl OwnedRecordV2 {
+    fn new(record: Record, operation_id: &str, intent_digest: &str) -> Self {
+        Self {
+            schema_version: "2".into(),
+            state_ref: record.state_ref,
+            path: record.path,
+            binding: record.binding,
+            ledger_blob_id: record.ledger_blob_id,
+            candidate_sha256: record.candidate_sha256,
+            source_commit: record.source_commit,
+            operation: record.operation,
+            logical_id: record.logical_id,
+            parser_change_accepted: record.parser_change_accepted,
+            base_commit: record.base_commit,
+            expected_blob_id: record.expected_blob_id,
+            operation_id: operation_id.into(),
+            intent_digest: intent_digest.into(),
+        }
+    }
+
     fn message(&self) -> Result<Vec<u8>> {
         let mut bytes = MARKER_V2.as_bytes().to_vec();
         bytes.extend(serde_json::to_vec(self)?);
@@ -732,32 +1008,43 @@ impl Preparation {
         Ok(id)
     }
 
-    fn ownership(&mut self, base: &Commit, change: &PreparedLedgerChange) -> Result<()> {
+    fn ownership(
+        &mut self,
+        base: &Commit,
+        ledger_path: &str,
+        binding: &Binding,
+        expected_blob: Option<&str>,
+    ) -> Result<Option<AckOrigin>> {
         self.git.check()?;
-        let (record, message, v2) = if let Some(json) = base.message.strip_prefix(MARKER.as_bytes())
-        {
-            let record: Record = serde_json::from_slice(json)
-                .map_err(|_| anyhow!("malformed state ownership receipt"))?;
-            record.validate(self.len)?;
-            let message = record.message()?;
-            (record, message, None)
-        } else if let Some(json) = base.message.strip_prefix(MARKER_V2.as_bytes()) {
-            let record: OwnedRecordV2 = serde_json::from_slice(json)
-                .map_err(|_| anyhow!("malformed state ownership receipt"))?;
-            record.validate(self.len)?;
-            (record.common(), record.message()?, Some(record))
-        } else {
-            return Err(anyhow!("foreign state base commit: owned receipt required"));
-        };
+        let (record, message, v2, v3) =
+            if let Some(json) = base.message.strip_prefix(MARKER.as_bytes()) {
+                let record: Record = serde_json::from_slice(json)
+                    .map_err(|_| anyhow!("malformed state ownership receipt"))?;
+                record.validate(self.len)?;
+                let message = record.message()?;
+                (record, message, None, None)
+            } else if let Some(json) = base.message.strip_prefix(MARKER_V2.as_bytes()) {
+                let record: OwnedRecordV2 = serde_json::from_slice(json)
+                    .map_err(|_| anyhow!("malformed state ownership receipt"))?;
+                record.validate(self.len)?;
+                (record.common(), record.message()?, Some(record), None)
+            } else if let Some(json) = base.message.strip_prefix(MARKER_V3.as_bytes()) {
+                let record: OwnedRecordV3 = serde_json::from_slice(json)
+                    .map_err(|_| anyhow!("malformed V3 state ownership receipt"))?;
+                record.validate(self.len)?;
+                (record.common(), record.message()?, None, Some(record))
+            } else {
+                return Err(anyhow!("foreign state base commit: owned receipt required"));
+            };
         ensure!(
             message == base.message
-                && record.path == change.path
-                && record.binding == change.binding
-                && Some(&record.ledger_blob_id) == change.expected_blob_id.as_ref()
+                && record.path == ledger_path
+                && &record.binding == binding
+                && Some(record.ledger_blob_id.as_str()) == expected_blob
                 && base.parents == [record.base_commit.clone()],
             "state ownership receipt mismatch"
         );
-        let path: Vec<_> = change.path.split('/').collect();
+        let path: Vec<_> = ledger_path.split('/').collect();
         ensure!(
             self.lookup(&base.tree, &path)? == record.ledger_blob_id,
             "owned ledger tree/blob mismatch"
@@ -767,6 +1054,62 @@ impl Preparation {
             record.validate_ledger(&ledger)?;
         }
         let parent = self.commit(&record.base_commit)?;
+        // Inspect just the immediate predecessor's typed metadata. Receipts in
+        // this exclusively administered repository are not cryptographic proof;
+        // recursively replaying its entire history is deliberately unnecessary.
+        let parent_floor = if let Some(json) = parent.message.strip_prefix(MARKER_V3.as_bytes()) {
+            let prior: OwnedRecordV3 =
+                serde_json::from_slice(json).map_err(|_| anyhow!("malformed parent V3 receipt"))?;
+            prior.validate(self.len)?;
+            ensure!(
+                prior.message()? == parent.message
+                    && prior.path == record.path
+                    && prior.binding == record.binding
+                    && Some(&prior.ledger_blob_id) == record.expected_blob_id.as_ref()
+                    && parent.parents == [prior.base_commit.clone()]
+                    && self.lookup(&parent.tree, &path)? == prior.ledger_blob_id,
+                "parent V3 receipt mismatch"
+            );
+            Some(prior.provenance_floor)
+        } else {
+            None
+        };
+        let floor = if let Some(v3) = &v3 {
+            let old_blob = record
+                .expected_blob_id
+                .as_ref()
+                .ok_or_else(|| anyhow!("V3 ledger base missing"))?;
+            ensure!(
+                self.lookup(&parent.tree, &path)? == *old_blob,
+                "V3 parent ledger mismatch"
+            );
+            if parent_floor.is_none() {
+                // V3 can only start with ACK on an already owned V1/V2 base.
+                ensure!(
+                    matches!(v3.proof, RecordProof::Acknowledgement(_)),
+                    "V3 continuation requires V3 parent"
+                );
+                // This call is bounded: non-V3 parents cannot recurse through V3.
+                self.ownership(&parent, &record.path, &record.binding, Some(old_blob))?;
+            }
+            let origin = match &v3.proof {
+                RecordProof::Acknowledgement(a) => Some(a.origin),
+                _ => None,
+            };
+            ensure!(
+                v3.provenance_floor == inherited_floor(parent_floor, origin),
+                "V3 provenance floor mismatch"
+            );
+            let old = self.read("blob", old_blob)?;
+            v3.validate_transition(&old, &ledger)?;
+            Some(v3.provenance_floor)
+        } else {
+            ensure!(
+                parent_floor.is_none(),
+                "state receipt reader floor downgrade refused"
+            );
+            None
+        };
         let time = next_time(parent.time)?;
         ensure!(
             base.bytes == commit_bytes(&base.tree, &record.base_commit, time, &base.message),
@@ -786,7 +1129,7 @@ impl Preparation {
             expected_tree == base.tree,
             "owned state commit has unrelated tree changes"
         );
-        Ok(())
+        Ok(floor)
     }
 }
 
@@ -932,16 +1275,12 @@ fn prepare(
         create_ref == change.expected_blob_id.is_none(),
         "create-ref must exactly match ledger initialization"
     );
-    match change.operation {
-        StateOperation::Enroll | StateOperation::Reack => ensure!(
-            change.provider_operation.is_none(),
-            "legacy state operation cannot carry provider intent"
-        ),
-        StateOperation::Prepare | StateOperation::MarkUncertain => {
-            let proof = change
-                .provider_operation
-                .as_ref()
-                .ok_or_else(|| anyhow!("state operation requires provider intent"))?;
+    let (intent, audit) = match (&change.proof, change.operation) {
+        (LedgerChangeProof::Source, StateOperation::Enroll | StateOperation::Reack) => (None, None),
+        (
+            LedgerChangeProof::Intent(proof),
+            StateOperation::Prepare | StateOperation::MarkUncertain,
+        ) => {
             ensure!(
                 !create_ref
                     && change.expected_blob_id.is_some()
@@ -950,8 +1289,18 @@ fn prepare(
                     && digest(&proof.intent_digest),
                 "invalid state operation provider intent"
             );
+            (Some(proof), None)
         }
-    }
+        (LedgerChangeProof::Acknowledgement(proof), StateOperation::Acknowledge) => {
+            proof.validate()?;
+            ensure!(
+                !create_ref && change.expected_blob_id.is_some() && !change.parser_change_accepted,
+                "ACK requires an existing owned ledger"
+            );
+            (None, Some(proof.audit()))
+        }
+        _ => return Err(anyhow!("state operation proof mismatch")),
+    };
     let git = GitSession::with_operation(repo, deadline, operation)?;
     let len = repository(&git)?;
     ensure!(
@@ -968,8 +1317,13 @@ fn prepare(
     };
     let base = p.commit(&change.base_commit)?;
     p.tree(&base.tree, 0)?;
-    if change.expected_blob_id.is_some() {
-        p.ownership(&base, change)?;
+    let parent_floor = if change.expected_blob_id.is_some() {
+        p.ownership(
+            &base,
+            &change.path,
+            &change.binding,
+            change.expected_blob_id.as_deref(),
+        )?
     } else {
         ensure!(
             !base
@@ -978,7 +1332,8 @@ fn prepare(
                 .any(|w| w.eq_ignore_ascii_case(b"hive-calendar-state")),
             "owned or malformed receipt cannot seed initialization"
         );
-    }
+        None
+    };
     let blob = p.object("blob", change.candidate_ledger.clone())?;
     let record = Record {
         schema_version: "1".into(),
@@ -993,6 +1348,7 @@ fn prepare(
             StateOperation::Reack => "reack",
             StateOperation::Prepare => "prepare",
             StateOperation::MarkUncertain => "mark_uncertain",
+            StateOperation::Acknowledge => "acknowledge",
         }
         .into(),
         logical_id: change.logical_id.clone(),
@@ -1000,23 +1356,29 @@ fn prepare(
         base_commit: change.base_commit.clone(),
         expected_blob_id: change.expected_blob_id.clone(),
     };
-    let message = if let Some(proof) = &change.provider_operation {
-        let record = OwnedRecordV2 {
-            schema_version: "2".into(),
-            state_ref: record.state_ref,
-            path: record.path,
-            binding: record.binding,
-            ledger_blob_id: record.ledger_blob_id,
-            candidate_sha256: record.candidate_sha256,
-            source_commit: record.source_commit,
-            operation: record.operation,
-            logical_id: record.logical_id,
-            parser_change_accepted: record.parser_change_accepted,
-            base_commit: record.base_commit,
-            expected_blob_id: record.expected_blob_id,
-            operation_id: proof.operation_id.clone(),
-            intent_digest: proof.intent_digest.clone(),
+    let v3 = parent_floor.is_some() || audit.is_some();
+    let floor = v3.then(|| inherited_floor(parent_floor, audit.map(|a| a.origin)));
+    let message = if let Some(floor) = &floor {
+        let proof = match (&change.proof, intent, audit) {
+            (LedgerChangeProof::Source, _, _) => RecordProof::Source,
+            (_, Some(p), _) => RecordProof::Intent(IntentRecord {
+                operation_id: p.operation_id.clone(),
+                intent_digest: p.intent_digest.clone(),
+            }),
+            (_, _, Some(a)) => RecordProof::Acknowledgement(Box::new(a.clone())),
+            _ => unreachable!(),
         };
+        let record = OwnedRecordV3::new(record, proof, *floor);
+        record.validate(len)?;
+        let old_blob = change
+            .expected_blob_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("V3 ledger base missing"))?;
+        let old = p.read("blob", old_blob)?;
+        record.validate_transition(&old, &change.candidate_ledger)?;
+        record.message()?
+    } else if let Some(proof) = intent {
+        let record = OwnedRecordV2::new(record, &proof.operation_id, &proof.intent_digest);
         record.validate(len)?;
         record.validate_ledger(&change.candidate_ledger)?;
         record.message()?
@@ -1049,7 +1411,9 @@ fn prepare(
     );
     p.git.check()?;
     let receipt = ApplyReceipt {
-        schema_version: if change.provider_operation.is_some() {
+        schema_version: if v3 {
+            "3"
+        } else if intent.is_some() {
             "2"
         } else {
             "1"
@@ -1074,14 +1438,15 @@ fn prepare(
         publication_ready: false,
         remote_verified: false,
         remote_ref_verified: false,
-        operation_id: change
-            .provider_operation
-            .as_ref()
-            .map(|p| p.operation_id.clone()),
-        intent_digest: change
-            .provider_operation
-            .as_ref()
-            .map(|p| p.intent_digest.clone()),
+        operation_id: intent
+            .map(|p| p.operation_id.clone())
+            .or_else(|| audit.map(|a| a.operation_id.clone())),
+        intent_digest: intent
+            .map(|p| p.intent_digest.clone())
+            .or_else(|| audit.map(|a| a.intent_digest.clone())),
+        ack_cause: audit.map(|a| a.cause),
+        evidence_digest: audit.map(|a| a.evidence_digest.clone()),
+        provenance_floor: floor,
     };
     Ok((p, receipt))
 }
@@ -1348,7 +1713,7 @@ mod tests {
                 path: "state/nested/ledger.json".into(),
                 expected_blob_id: None,
                 candidate_ledger: b"{\"fixture\":1}\n".to_vec(),
-                provider_operation: None,
+                proof: LedgerChangeProof::Source,
             }
         }
 
@@ -1418,7 +1783,7 @@ mod tests {
                     transparency: "transparent",
                 })),
             };
-            change.provider_operation = Some(crate::ProviderOperationProof {
+            change.proof = LedgerChangeProof::Intent(crate::ProviderOperationProof {
                 operation_id: pending.operation_id.clone(),
                 intent_digest: crate::operations::intent_digest(
                     &change.binding,
@@ -1443,6 +1808,619 @@ mod tests {
             .unwrap();
             change
         }
+
+        fn ack_change(&self, receipt: &ApplyReceipt) -> PreparedLedgerChange {
+            let bytes = self.run(&["cat-file", "blob", &receipt.ledger_blob_id], b"");
+            let mut ledger = crate::ledger::decode(&bytes, &receipt.binding).unwrap();
+            let entry = ledger
+                .entries
+                .iter_mut()
+                .find(|e| e.logical_id == receipt.logical_id)
+                .unwrap();
+            let pending = entry.pending.take().unwrap();
+            let provider_ack = crate::ProviderAck {
+                event_id: pending.target_event_id.clone(),
+                etag: "\"fixture-result\"".into(),
+                last_payload_hash: pending.desired_payload_hash.clone().unwrap(),
+            };
+            let audit = AckAudit {
+                schema_version: "1".into(),
+                binding: receipt.binding.clone(),
+                base_commit: receipt.commit.clone(),
+                path: receipt.ledger_path.clone(),
+                old_blob_id: receipt.ledger_blob_id.clone(),
+                logical_id: receipt.logical_id.clone(),
+                operation_id: pending.operation_id.clone(),
+                intent_digest: crate::operations::intent_digest(
+                    &receipt.binding,
+                    &receipt.logical_id,
+                    &pending,
+                )
+                .unwrap(),
+                old_pending: pending.clone(),
+                provider_ack: provider_ack.clone(),
+                cause: if pending.phase == crate::OperationPhase::Prepared {
+                    AckCause::MutationResponse
+                } else {
+                    AckCause::ReconciledObservation
+                },
+                origin: AckOrigin::SyntheticFixture,
+                evidence_digest: String::new(),
+            };
+            let proof = ack::fixture_proof(audit).unwrap();
+            entry.lifecycle = crate::Lifecycle::Active;
+            entry.provider_ack = Some(provider_ack);
+            PreparedLedgerChange {
+                candidate_sha256: proof
+                    .audit()
+                    .evidence_digest
+                    .strip_prefix("sha256:")
+                    .unwrap()
+                    .into(),
+                operation: StateOperation::Acknowledge,
+                logical_id: receipt.logical_id.clone(),
+                source_commit: pending.intended_source.commit,
+                binding: receipt.binding.clone(),
+                parser_change_accepted: false,
+                base_commit: receipt.commit.clone(),
+                path: receipt.ledger_path.clone(),
+                expected_blob_id: Some(receipt.ledger_blob_id.clone()),
+                candidate_ledger: serde_json::to_vec(&ledger).unwrap(),
+                proof: LedgerChangeProof::Acknowledgement(proof),
+            }
+        }
+
+        fn continuation(&self, receipt: &ApplyReceipt) -> PreparedLedgerChange {
+            let mut change = self.update(receipt);
+            change.logical_id = receipt.logical_id.clone();
+            change.source_commit = "e".repeat(self.base.len());
+            let mut ledger = crate::ledger::decode(
+                &self.run(&["cat-file", "blob", &receipt.ledger_blob_id], b""),
+                &receipt.binding,
+            )
+            .unwrap();
+            ledger.source_watermark = change.source_commit.clone();
+            ledger
+                .entries
+                .iter_mut()
+                .find(|e| e.logical_id == receipt.logical_id)
+                .unwrap()
+                .source_ack
+                .commit = change.source_commit.clone();
+            change.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+            change
+        }
+    }
+
+    #[test]
+    fn v3_terminal_ack_preserves_evidence_and_retries_original_basis() {
+        for format in ["sha1", "sha256"] {
+            for update in [false, true] {
+                for uncertain in [false, true] {
+                    let f = Fixture::new(format);
+                    let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+                    let mut prepare = f.pending_change(&first);
+                    let mut ledger =
+                        crate::ledger::decode(&prepare.candidate_ledger, &prepare.binding).unwrap();
+                    if update {
+                        let entry = &mut ledger.entries[0];
+                        let pending = entry.pending.as_mut().unwrap();
+                        pending.kind = crate::OperationKind::Update;
+                        pending.base_etag = Some("\"fixture-old\"".into());
+                        entry.lifecycle = crate::Lifecycle::Active;
+                        entry.provider_ack = Some(crate::ProviderAck {
+                            event_id: pending.target_event_id.clone(),
+                            etag: "\"fixture-old\"".into(),
+                            last_payload_hash: format!("sha256:{}", "e".repeat(64)),
+                        });
+                        prepare.proof = LedgerChangeProof::Intent(crate::ProviderOperationProof {
+                            operation_id: pending.operation_id.clone(),
+                            intent_digest: crate::operations::intent_digest(
+                                &prepare.binding,
+                                &prepare.logical_id,
+                                pending,
+                            )
+                            .unwrap(),
+                        });
+                    }
+                    let mut extra = ledger.entries[0].clone();
+                    extra.logical_id = "33333333-3333-4333-8333-333333333333".into();
+                    extra.lifecycle = crate::Lifecycle::Enrolled;
+                    extra.pending = None;
+                    extra.provider_ack = None;
+                    extra.source_ack.line = 2;
+                    extra.source_ack.mw_id = "tasks:2:0".into();
+                    ledger.entries.push(extra);
+                    prepare.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+                    let mut prepared =
+                        apply(&f.repo, STATE_REF, &prepare, false, deadline()).unwrap();
+                    if uncertain {
+                        let mut change = f.pending_change(&prepared);
+                        change.operation = StateOperation::MarkUncertain;
+                        ledger.entries[0].pending.as_mut().unwrap().phase =
+                            crate::OperationPhase::Uncertain;
+                        let pending = ledger.entries[0].pending.as_ref().unwrap();
+                        change.proof = LedgerChangeProof::Intent(crate::ProviderOperationProof {
+                            operation_id: pending.operation_id.clone(),
+                            intent_digest: crate::operations::intent_digest(
+                                &change.binding,
+                                &change.logical_id,
+                                pending,
+                            )
+                            .unwrap(),
+                        });
+                        change.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+                        prepared = apply(&f.repo, STATE_REF, &change, false, deadline()).unwrap();
+                    }
+                    let change = f.ack_change(&prepared);
+                    let before = snapshot(&f.repo);
+                    let checked = verify(&f.repo, STATE_REF, &change, false, deadline()).unwrap();
+                    assert_eq!(snapshot(&f.repo), before);
+                    let error = observing(
+                        |phase| {
+                            if phase == WritePhase::AfterCas {
+                                return Err(anyhow!("injected lost ACK response"));
+                            }
+                            Ok(())
+                        },
+                        || apply(&f.repo, STATE_REF, &change, false, deadline()),
+                    )
+                    .unwrap_err();
+                    assert!(error.to_string().contains("CAS outcome unknown"));
+                    assert_eq!(f.tip().as_deref(), Some(checked.commit.as_str()));
+                    let before = snapshot(&f.repo);
+                    let applied = apply(&f.repo, STATE_REF, &change, false, deadline()).unwrap();
+                    assert_eq!(applied.status, "already_applied");
+                    assert_eq!(applied.commit, checked.commit);
+                    assert_eq!(applied.schema_version, "3");
+                    assert_eq!(applied.provenance_floor, Some(AckOrigin::SyntheticFixture));
+                    assert!(
+                        !applied.remote_verified
+                            && !applied.remote_ref_verified
+                            && !applied.publication_ready
+                    );
+                    assert_eq!(snapshot(&f.repo), before);
+                    let after =
+                        crate::ledger::decode(&change.candidate_ledger, &change.binding).unwrap();
+                    assert!(after.entries[0].pending.is_none());
+                    assert_eq!(after.entries[1], ledger.entries[1]);
+                    assert_eq!(after.entries[0].source_ack, ledger.entries[0].source_ack);
+                    assert_eq!(after.source_watermark, ledger.source_watermark);
+                    let json = serde_json::to_value(&applied).unwrap();
+                    assert_eq!(json["provenanceFloor"], "synthetic_fixture");
+                    assert!(json["ackCause"].is_string() && json["evidenceDigest"].is_string());
+                    assert!(json["operationId"].is_string() && json["intentDigest"].is_string());
+                    for path in ["dir", "empty.json", "executable", "link"] {
+                        assert_eq!(
+                            f.run(&["ls-tree", &f.base, "--", path], b""),
+                            f.run(&["ls-tree", &applied.commit, "--", path], b"")
+                        );
+                    }
+                    // Reopening ACK ownership must consult its parent's pending ledger.
+                    let next = f.continuation(&applied);
+                    let advanced = apply(&f.repo, STATE_REF, &next, false, deadline()).unwrap();
+                    assert_eq!(advanced.schema_version, "3");
+                    assert_eq!(advanced.provenance_floor, Some(AckOrigin::SyntheticFixture));
+                    let before = snapshot(&f.repo);
+                    assert!(apply(&f.repo, STATE_REF, &change, false, deadline()).is_err());
+                    assert_eq!(snapshot(&f.repo), before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ack_transition_and_proof_mismatches_refuse_before_object_writes() {
+        let f = Fixture::new("sha1");
+        let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+        let prepared = apply(
+            &f.repo,
+            STATE_REF,
+            &f.pending_change(&first),
+            false,
+            deadline(),
+        )
+        .unwrap();
+        for corruption in [
+            "source_proof",
+            "intent_proof",
+            "wrong_operation",
+            "source_commit",
+            "parser",
+            "initialize",
+            "logical_id",
+            "path",
+            "old_blob",
+            "phase",
+            "audit_source",
+            "result_etag",
+            "result_hash",
+            "source_ack",
+            "watermark",
+            "pending",
+            "lifecycle",
+            "tombstone",
+            "candidate_digest",
+        ] {
+            let mut change = f.ack_change(&prepared);
+            match corruption {
+                "source_proof" => change.proof = LedgerChangeProof::Source,
+                "intent_proof" => {
+                    change.proof = LedgerChangeProof::Intent(crate::ProviderOperationProof {
+                        operation_id: prepared.operation_id.clone().unwrap(),
+                        intent_digest: prepared.intent_digest.clone().unwrap(),
+                    })
+                }
+                "wrong_operation" => change.operation = StateOperation::Reack,
+                "source_commit" => change.source_commit = "f".repeat(40),
+                "parser" => change.parser_change_accepted = true,
+                "initialize" => change.expected_blob_id = None,
+                "logical_id" => change.logical_id = "33333333-3333-4333-8333-333333333333".into(),
+                "path" => change.path = "other.json".into(),
+                "old_blob" => change.expected_blob_id = Some("f".repeat(40)),
+                "candidate_digest" => change.candidate_sha256 = "f".repeat(64),
+                "phase" | "audit_source" => {
+                    let LedgerChangeProof::Acknowledgement(proof) = &change.proof else {
+                        unreachable!()
+                    };
+                    let mut audit = proof.audit().clone();
+                    if corruption == "phase" {
+                        audit.old_pending.phase = crate::OperationPhase::Uncertain;
+                    } else {
+                        audit.old_pending.intended_source.commit = "f".repeat(40);
+                        audit.intent_digest = crate::operations::intent_digest(
+                            &audit.binding,
+                            &audit.logical_id,
+                            &audit.old_pending,
+                        )
+                        .unwrap();
+                        change.source_commit = audit.old_pending.intended_source.commit.clone();
+                    }
+                    let proof = ack::fixture_proof(audit).unwrap();
+                    change.candidate_sha256 = proof
+                        .audit()
+                        .evidence_digest
+                        .strip_prefix("sha256:")
+                        .unwrap()
+                        .into();
+                    change.proof = LedgerChangeProof::Acknowledgement(proof);
+                }
+                _ => {
+                    let mut ledger =
+                        crate::ledger::decode(&change.candidate_ledger, &change.binding).unwrap();
+                    let entry = &mut ledger.entries[0];
+                    match corruption {
+                        "result_etag" => {
+                            entry.provider_ack.as_mut().unwrap().etag = "\"unexpected\"".into()
+                        }
+                        "result_hash" => {
+                            entry.provider_ack.as_mut().unwrap().last_payload_hash =
+                                format!("sha256:{}", "f".repeat(64))
+                        }
+                        "source_ack" => entry.source_ack.commit = "f".repeat(40),
+                        "watermark" => ledger.source_watermark = "f".repeat(40),
+                        "pending" => {
+                            let LedgerChangeProof::Acknowledgement(proof) = &change.proof else {
+                                unreachable!()
+                            };
+                            entry.pending = Some(proof.audit().old_pending.clone());
+                        }
+                        "lifecycle" => entry.lifecycle = crate::Lifecycle::Enrolled,
+                        "tombstone" => {
+                            entry.tombstone = Some(crate::Tombstone {
+                                reason: "fixture".into(),
+                                source_commit: change.source_commit.clone(),
+                                operation_id: None,
+                                remote_disposition: crate::RemoteDisposition::Unknown,
+                            })
+                        }
+                        _ => unreachable!(),
+                    }
+                    change.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+                }
+            }
+            let before = snapshot(&f.repo);
+            assert!(
+                apply(
+                    &f.repo,
+                    STATE_REF,
+                    &change,
+                    corruption == "initialize",
+                    deadline()
+                )
+                .is_err(),
+                "{corruption}"
+            );
+            assert_eq!(snapshot(&f.repo), before, "{corruption}");
+        }
+    }
+
+    #[test]
+    fn v3_source_and_intent_continuations_cannot_lower_the_reader_or_origin_floor() {
+        let f = Fixture::new("sha256");
+        let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+        let pending = apply(
+            &f.repo,
+            STATE_REF,
+            &f.pending_change(&first),
+            false,
+            deadline(),
+        )
+        .unwrap();
+        let ack = apply(
+            &f.repo,
+            STATE_REF,
+            &f.ack_change(&pending),
+            false,
+            deadline(),
+        )
+        .unwrap();
+        let mut reack = f.continuation(&ack);
+        let mut ledger = crate::ledger::decode(&reack.candidate_ledger, &reack.binding).unwrap();
+        ledger.entries[0].source_ack.expected.text = "Ship again".into();
+        ledger.entries[0].source_ack.expected.literal_text =
+            "- [ ] Ship again due:2026-11-01".into();
+        reack.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+        let source = apply(&f.repo, STATE_REF, &reack, false, deadline()).unwrap();
+        let mut enroll = f.continuation(&source);
+        enroll.operation = StateOperation::Enroll;
+        enroll.logical_id = "33333333-3333-4333-8333-333333333333".into();
+        let mut extra = ledger.entries[0].clone();
+        extra.logical_id = enroll.logical_id.clone();
+        extra.source_ack.line = 2;
+        extra.source_ack.mw_id = "tasks:2:0".into();
+        extra.lifecycle = crate::Lifecycle::Enrolled;
+        extra.provider_ack = None;
+        ledger.entries.push(extra);
+        enroll.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+        let enrolled = apply(&f.repo, STATE_REF, &enroll, false, deadline()).unwrap();
+        let mut prepare = f.pending_change(&enrolled);
+        prepare.source_commit = source.source_commit.clone();
+        let provider = ledger.entries[0].provider_ack.clone().unwrap();
+        let event = crate::ProspectiveEvent {
+            summary: "Ship again".into(),
+            start: crate::CalendarDate {
+                date: "2026-11-01".into(),
+            },
+            end: crate::CalendarDate {
+                date: "2026-11-02".into(),
+            },
+            availability: "free",
+            transparency: "transparent",
+        };
+        let pending = crate::PendingOperation {
+            operation_id: "44444444-4444-4444-8444-444444444444".into(),
+            kind: crate::OperationKind::Update,
+            phase: crate::OperationPhase::Prepared,
+            intended_source: ledger.entries[0].source_ack.clone(),
+            target_event_id: provider.event_id,
+            base_etag: Some(provider.etag),
+            desired_payload_hash: Some(crate::payload_hash(&event)),
+        };
+        prepare.proof = LedgerChangeProof::Intent(crate::ProviderOperationProof {
+            operation_id: pending.operation_id.clone(),
+            intent_digest: crate::operations::intent_digest(
+                &prepare.binding,
+                &prepare.logical_id,
+                &pending,
+            )
+            .unwrap(),
+        });
+        ledger.entries[0].pending = Some(pending);
+        prepare.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+        let prepared = apply(&f.repo, STATE_REF, &prepare, false, deadline()).unwrap();
+        let mut uncertain = prepare;
+        uncertain.base_commit = prepared.commit.clone();
+        uncertain.expected_blob_id = Some(prepared.ledger_blob_id.clone());
+        uncertain.operation = StateOperation::MarkUncertain;
+        ledger.entries[0].pending.as_mut().unwrap().phase = crate::OperationPhase::Uncertain;
+        uncertain.candidate_ledger = serde_json::to_vec(&ledger).unwrap();
+        let uncertain = apply(&f.repo, STATE_REF, &uncertain, false, deadline()).unwrap();
+        for receipt in [&source, &enrolled, &prepared, &uncertain] {
+            assert_eq!(receipt.schema_version, "3");
+            assert_eq!(receipt.provenance_floor, Some(AckOrigin::SyntheticFixture));
+            assert!(receipt.ack_cause.is_none() && receipt.evidence_digest.is_none());
+            let bytes = f.run(&["cat-file", "commit", &receipt.commit], b"");
+            let split = bytes.windows(2).position(|w| w == b"\n\n").unwrap();
+            let message = &bytes[split + 2..];
+            assert!(message.strip_prefix(MARKER.as_bytes()).is_none());
+            assert!(message.strip_prefix(MARKER_V2.as_bytes()).is_none());
+            let record: OwnedRecordV3 =
+                serde_json::from_slice(message.strip_prefix(MARKER_V3.as_bytes()).unwrap())
+                    .unwrap();
+            assert_eq!(record.provenance_floor, AckOrigin::SyntheticFixture);
+        }
+        // Forged source continuation cannot launder a synthetic ACK branch.
+        let original = f.run(&["cat-file", "commit", &source.commit], b"");
+        let split = original.windows(2).position(|w| w == b"\n\n").unwrap();
+        let mut record: OwnedRecordV3 = serde_json::from_slice(
+            original[split + 2..]
+                .strip_prefix(MARKER_V3.as_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+        record.provenance_floor = AckOrigin::GoogleAuthenticated;
+        let mut bytes = original[..split + 2].to_vec();
+        bytes.extend(record.message().unwrap());
+        let forged = f.write("commit", &bytes);
+        f.run(&["update-ref", STATE_REF, &forged], b"");
+        let mut next = f.continuation(&source);
+        next.base_commit = forged;
+        let before = snapshot(&f.repo);
+        assert!(apply(&f.repo, STATE_REF, &next, false, deadline()).is_err());
+        assert_eq!(snapshot(&f.repo), before);
+
+        // A V1-looking downgrade of a V3 continuation also refuses.
+        let mut common = record.common();
+        common.operation = "reack".into();
+        let mut bytes = original[..split + 2].to_vec();
+        bytes.extend(common.message().unwrap());
+        let forged = f.write("commit", &bytes);
+        f.run(&["update-ref", STATE_REF, &forged], b"");
+        next.base_commit = forged;
+        let before = snapshot(&f.repo);
+        assert!(apply(&f.repo, STATE_REF, &next, false, deadline()).is_err());
+        assert_eq!(snapshot(&f.repo), before);
+    }
+
+    #[test]
+    fn malformed_or_forged_v3_audits_are_not_owned() {
+        let f = Fixture::new("sha1");
+        let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+        let pending = apply(
+            &f.repo,
+            STATE_REF,
+            &f.pending_change(&first),
+            false,
+            deadline(),
+        )
+        .unwrap();
+        let applied = apply(
+            &f.repo,
+            STATE_REF,
+            &f.ack_change(&pending),
+            false,
+            deadline(),
+        )
+        .unwrap();
+        let original = f.run(&["cat-file", "commit", &applied.commit], b"");
+        let split = original.windows(2).position(|w| w == b"\n\n").unwrap();
+        let json = original[split + 2..]
+            .strip_prefix(MARKER_V3.as_bytes())
+            .unwrap();
+        for corruption in [
+            "floor",
+            "evidence",
+            "phase",
+            "event",
+            "etag",
+            "hash",
+            "operation_id",
+            "source_commit",
+            "audit_base",
+            "audit_path",
+            "audit_blob",
+            "unknown_origin",
+            "unknown_field",
+            "duplicate",
+            "version",
+            "proof_operation",
+        ] {
+            let mut record: OwnedRecordV3 = serde_json::from_slice(json).unwrap();
+            let RecordProof::Acknowledgement(audit) = &mut record.proof else {
+                unreachable!()
+            };
+            match corruption {
+                "floor" => record.provenance_floor = AckOrigin::GoogleAuthenticated,
+                "evidence" => audit.evidence_digest = format!("sha256:{}", "f".repeat(64)),
+                "phase" => audit.old_pending.phase = crate::OperationPhase::Uncertain,
+                "event" => audit.provider_ack.event_id = "abcde12345".into(),
+                "etag" => audit.provider_ack.etag = "W/\"weak\"".into(),
+                "hash" => {
+                    audit.provider_ack.last_payload_hash = format!("sha256:{}", "f".repeat(64))
+                }
+                "operation_id" => {
+                    audit.operation_id = "33333333-3333-4333-8333-333333333333".into()
+                }
+                "source_commit" => record.source_commit = "f".repeat(40),
+                "audit_base" => audit.base_commit = "f".repeat(40),
+                "audit_path" => audit.path = "other.json".into(),
+                "audit_blob" => audit.old_blob_id = "f".repeat(40),
+                "version" => record.schema_version = "4".into(),
+                "proof_operation" => record.operation = "prepare".into(),
+                "unknown_origin" | "unknown_field" | "duplicate" => {}
+                _ => unreachable!(),
+            }
+            if corruption != "evidence" {
+                audit.evidence_digest = ack::evidence_digest(audit).unwrap();
+                record.candidate_sha256 = audit
+                    .evidence_digest
+                    .strip_prefix("sha256:")
+                    .unwrap()
+                    .into();
+            }
+            let mut message = record.message().unwrap();
+            if corruption == "unknown_origin" {
+                message = String::from_utf8(message)
+                    .unwrap()
+                    .replace("synthetic_fixture", "unknown_origin")
+                    .into_bytes();
+            } else if matches!(corruption, "unknown_field" | "duplicate") {
+                let extra = if corruption == "duplicate" {
+                    ",\"schemaVersion\":\"3\""
+                } else {
+                    ",\"unrecognized\":true"
+                };
+                message.splice(message.len() - 2..message.len() - 2, extra.bytes());
+            }
+            let mut bytes = original[..split + 2].to_vec();
+            bytes.extend(message);
+            let forged = f.write("commit", &bytes);
+            f.run(&["update-ref", STATE_REF, &forged], b"");
+            let mut next = f.continuation(&applied);
+            next.base_commit = forged;
+            let before = snapshot(&f.repo);
+            assert!(
+                apply(&f.repo, STATE_REF, &next, false, deadline()).is_err(),
+                "{corruption}"
+            );
+            assert_eq!(snapshot(&f.repo), before, "{corruption}");
+        }
+    }
+
+    #[test]
+    fn provenance_floor_is_monotone_and_fixture_authority_stays_synthetic() {
+        for parent in [
+            None,
+            Some(AckOrigin::GoogleAuthenticated),
+            Some(AckOrigin::SyntheticFixture),
+        ] {
+            for origin in [
+                None,
+                Some(AckOrigin::GoogleAuthenticated),
+                Some(AckOrigin::SyntheticFixture),
+            ] {
+                let expected = if parent == Some(AckOrigin::SyntheticFixture)
+                    || origin == Some(AckOrigin::SyntheticFixture)
+                {
+                    AckOrigin::SyntheticFixture
+                } else {
+                    AckOrigin::GoogleAuthenticated
+                };
+                assert_eq!(inherited_floor(parent, origin), expected);
+            }
+        }
+        let f = Fixture::new("sha1");
+        let first = apply(&f.repo, STATE_REF, &f.change(), true, deadline()).unwrap();
+        let prepared = apply(
+            &f.repo,
+            STATE_REF,
+            &f.pending_change(&first),
+            false,
+            deadline(),
+        )
+        .unwrap();
+        let change = f.ack_change(&prepared);
+        let LedgerChangeProof::Acknowledgement(proof) = change.proof else {
+            unreachable!()
+        };
+        let boxed = RecordProof::Acknowledgement(Box::new(proof.audit().clone()));
+        let expected = [
+            b"{\"kind\":\"Acknowledgement\",\"value\":".as_slice(),
+            serde_json::to_vec(proof.audit()).unwrap().as_slice(),
+            b"}",
+        ]
+        .concat();
+        assert_eq!(serde_json::to_vec(&boxed).unwrap(), expected);
+        let decoded: RecordProof = serde_json::from_slice(&expected).unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
+        let mut metadata = proof.audit().clone();
+        // Raw metadata only, never Google sealed authority or an HTTP fixture.
+        metadata.origin = AckOrigin::GoogleAuthenticated;
+        metadata.evidence_digest = ack::evidence_digest(&metadata).unwrap();
+        let fixture = ack::fixture_proof(metadata).unwrap();
+        assert_eq!(fixture.audit().origin, AckOrigin::SyntheticFixture);
+        fixture.validate().unwrap();
     }
 
     fn snapshot(path: &Path) -> BTreeMap<PathBuf, (u32, Vec<u8>)> {
@@ -1818,21 +2796,16 @@ mod tests {
             "delete",
         ] {
             let mut change = f.pending_change(&first);
+            let LedgerChangeProof::Intent(proof) = &mut change.proof else {
+                unreachable!()
+            };
             match corruption {
-                "missing" => change.provider_operation = None,
-                "uuid" => {
-                    change.provider_operation.as_mut().unwrap().operation_id = "invalid".into()
-                }
-                "digest" => {
-                    change.provider_operation.as_mut().unwrap().intent_digest = "a".repeat(64)
-                }
-                "other_digest" => {
-                    change.provider_operation.as_mut().unwrap().intent_digest =
-                        format!("sha256:{}", "a".repeat(64))
-                }
+                "missing" => change.proof = LedgerChangeProof::Source,
+                "uuid" => proof.operation_id = "invalid".into(),
+                "digest" => proof.intent_digest = "a".repeat(64),
+                "other_digest" => proof.intent_digest = format!("sha256:{}", "a".repeat(64)),
                 "operation_id" => {
-                    change.provider_operation.as_mut().unwrap().operation_id =
-                        "33333333-3333-4333-8333-333333333333".into()
+                    proof.operation_id = "33333333-3333-4333-8333-333333333333".into()
                 }
                 "phase" => change.operation = StateOperation::MarkUncertain,
                 "entry" => change.logical_id = "33333333-3333-4333-8333-333333333333".into(),
@@ -1856,13 +2829,12 @@ mod tests {
                         }
                         _ => unreachable!(),
                     }
-                    change.provider_operation.as_mut().unwrap().intent_digest =
-                        crate::operations::intent_digest(
-                            &change.binding,
-                            &change.logical_id,
-                            pending,
-                        )
-                        .unwrap();
+                    proof.intent_digest = crate::operations::intent_digest(
+                        &change.binding,
+                        &change.logical_id,
+                        pending,
+                    )
+                    .unwrap();
                     if corruption == "delete" {
                         let entry = &mut ledger.entries[0];
                         entry.lifecycle = crate::Lifecycle::Active;
@@ -2414,5 +3386,46 @@ mod tests {
             "committer Hive Calendar <hive-calendar@localhost> 1700000001 +0000\n\n"
         );
         assert_eq!(bytes, [header.as_bytes(), expected.as_bytes()].concat());
+
+        let mut common = record.clone();
+        common.operation = "prepare".into();
+        common.expected_blob_id = Some("6".repeat(40));
+        let v2 = OwnedRecordV2::new(
+            common,
+            "22222222-2222-4222-8222-222222222222",
+            &format!("sha256:{}", "7".repeat(64)),
+        );
+        let expected_v2 = concat!(
+            "hive-calendar-state v2\n\n",
+            "{\"schemaVersion\":\"2\",\"stateRef\":\"refs/heads/hive-calendar-state\",\"path\":\"ledger.json\",",
+            "\"binding\":{\"provider\":\"google-calendar\",\"accountId\":\"a\",\"calendarId\":\"c\",\"sourceRepoId\":\"s\"},",
+            "\"ledgerBlobId\":\"1111111111111111111111111111111111111111\",",
+            "\"candidateSha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",",
+            "\"sourceCommit\":\"3333333333333333333333333333333333333333\",\"operation\":\"prepare\",",
+            "\"logicalId\":\"id\",\"parserChangeAccepted\":false,\"baseCommit\":\"4444444444444444444444444444444444444444\",",
+            "\"expectedBlobId\":\"6666666666666666666666666666666666666666\",",
+            "\"operationId\":\"22222222-2222-4222-8222-222222222222\",",
+            "\"intentDigest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"}\n"
+        );
+        assert_eq!(v2.message().unwrap(), expected_v2.as_bytes());
+
+        let mut common = record;
+        common.expected_blob_id = Some("6".repeat(40));
+        let v3 = OwnedRecordV3::new(common, RecordProof::Source, AckOrigin::SyntheticFixture);
+        let expected_v3 = concat!(
+            "hive-calendar-state v3\n\n",
+            "{\"schemaVersion\":\"3\",\"stateRef\":\"refs/heads/hive-calendar-state\",\"path\":\"ledger.json\",",
+            "\"binding\":{\"provider\":\"google-calendar\",\"accountId\":\"a\",\"calendarId\":\"c\",\"sourceRepoId\":\"s\"},",
+            "\"ledgerBlobId\":\"1111111111111111111111111111111111111111\",",
+            "\"candidateSha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",",
+            "\"sourceCommit\":\"3333333333333333333333333333333333333333\",\"operation\":\"enroll\",",
+            "\"logicalId\":\"id\",\"parserChangeAccepted\":false,\"baseCommit\":\"4444444444444444444444444444444444444444\",",
+            "\"expectedBlobId\":\"6666666666666666666666666666666666666666\",",
+            "\"proof\":{\"kind\":\"Source\"},\"provenanceFloor\":\"synthetic_fixture\"}\n"
+        );
+        assert_eq!(v3.message().unwrap(), expected_v3.as_bytes());
+        let parsed: OwnedRecordV3 =
+            serde_json::from_slice(&v3.message().unwrap()[MARKER_V3.len()..]).unwrap();
+        assert_eq!(parsed.message().unwrap(), expected_v3.as_bytes());
     }
 }

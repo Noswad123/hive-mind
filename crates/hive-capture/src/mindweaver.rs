@@ -1271,7 +1271,9 @@ mod tests {
     #[test]
     fn real_process_runner_bounds_output_timeout_nonzero_and_spawn_failure() {
         let runner = ProcessRunner {
-            timeout: Duration::from_millis(100),
+            // Isolate the output guard from host scheduling latency. The short
+            // timeout is exercised separately below, not raced against output.
+            timeout: Duration::from_secs(2),
             output_limit: 1024,
         };
         let mut invocation = Invocation {
@@ -1289,9 +1291,13 @@ mod tests {
         );
         invocation.binary = "/bin/sleep".into();
         invocation.args = vec!["5".into()];
+        let timeout_runner = ProcessRunner {
+            timeout: Duration::from_millis(100),
+            output_limit: 1024,
+        };
         let start = Instant::now();
         assert!(
-            runner
+            timeout_runner
                 .run(&invocation)
                 .unwrap_err()
                 .to_string()

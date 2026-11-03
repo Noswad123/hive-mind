@@ -129,7 +129,14 @@ fn calendar_help_and_invalid_publication_flags_are_credential_free() {
             .unwrap();
         assert!(output.status.success());
     }
-    for arg in ["publish", "apply", "login"] {
+    for arg in [
+        "publish",
+        "apply",
+        "login",
+        "ack",
+        "acknowledge",
+        "apply-ack",
+    ] {
         assert!(
             !Command::new(env!("CARGO_BIN_EXE_hive"))
                 .args(["calendar", arg])

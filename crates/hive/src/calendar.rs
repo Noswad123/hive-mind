@@ -1,10 +1,15 @@
-//! Calendar planning and explicitly approved local state-ref updates; no provider transport.
+//! Calendar planning, local state-ref updates, and separate OAuth management; no publisher.
 use std::{io::Write, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 #[derive(Debug, clap::Subcommand)]
 pub enum CalendarCommand {
+    /// Manage a separate Calendar Events OAuth connection; never publishes events.
+    Auth {
+        #[command(subcommand)]
+        command: crate::captures_auth::CaptureAuthCommand,
+    },
     /// Preview open task due dates from one exact committed Markdown snapshot.
     ///
     /// No working-tree edits, credentials, databases, Calendar calls, or ledger writes.
@@ -316,7 +321,20 @@ pub struct SimulationArgs {
 }
 
 pub fn command(command: CalendarCommand) -> Result<()> {
+    command_with_auth(command, crate::captures_auth::auth_command_for)
+}
+
+fn command_with_auth(
+    command: CalendarCommand,
+    auth: impl FnOnce(
+        crate::captures_auth::CaptureAuthCommand,
+        hive_google_auth::AuthProfile,
+    ) -> Result<()>,
+) -> Result<()> {
     match command {
+        CalendarCommand::Auth { command } => {
+            auth(command, hive_google_auth::AuthProfile::CalendarEvents)
+        }
         CalendarCommand::Preview { source } => {
             write_output(&hive_calendar::preview(&source.into_options())?)
         }
@@ -465,4 +483,80 @@ fn write_candidate(candidate: &impl serde::Serialize) -> Result<()> {
         .lock()
         .write_all(&encoded)
         .context("write ledger candidate")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::captures_auth::CaptureAuthCommand;
+    use clap::Parser;
+
+    #[test]
+    fn calendar_auth_routes_only_to_calendar_profile() {
+        for operation in ["login", "status", "logout"] {
+            let mut args = vec![
+                "hive",
+                "calendar",
+                "auth",
+                operation,
+                "--connection",
+                "personal",
+            ];
+            if operation == "login" {
+                args.extend(["--client-json", "/fixture/client.json"]);
+            }
+            let cli = crate::Cli::try_parse_from(args).unwrap();
+            let Some(crate::Commands::Calendar { command }) = cli.command else {
+                panic!("wrong command")
+            };
+            command_with_auth(command, |command, profile| {
+                assert_eq!(profile, hive_google_auth::AuthProfile::CalendarEvents);
+                let connection = match command {
+                    CaptureAuthCommand::Login {
+                        connection,
+                        client_json,
+                    } => {
+                        assert_eq!(operation, "login");
+                        assert_eq!(client_json, PathBuf::from("/fixture/client.json"));
+                        connection
+                    }
+                    CaptureAuthCommand::Status { connection } => {
+                        assert_eq!(operation, "status");
+                        connection
+                    }
+                    CaptureAuthCommand::Logout { connection } => {
+                        assert_eq!(operation, "logout");
+                        connection
+                    }
+                };
+                assert_eq!(connection, "personal");
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert!(
+            crate::Cli::try_parse_from([
+                "hive",
+                "calendar",
+                "auth",
+                "login",
+                "--connection",
+                "personal"
+            ])
+            .is_err()
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "hive",
+                "calendar",
+                "auth",
+                "status",
+                "--connection",
+                "personal",
+                "--access-token-env",
+                "HIVE_GOOGLE_TOKEN"
+            ])
+            .is_err()
+        );
+    }
 }

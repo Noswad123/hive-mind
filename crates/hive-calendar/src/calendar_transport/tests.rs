@@ -10,10 +10,22 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-const LOGICAL: &str = "11111111-1111-4111-8111-111111111111";
-const OPERATION: &str = "22222222-2222-4222-8222-222222222222";
+pub(super) const LOGICAL: &str = "11111111-1111-4111-8111-111111111111";
+pub(super) const OPERATION: &str = "22222222-2222-4222-8222-222222222222";
 
-struct Reply {
+// Keep deadline fixtures independent while Git fixture tests remain parallel.
+// Lock once per test, not per server: redirects use simultaneous servers.
+static HTTP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) fn http_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    let guard = HTTP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Initialize the shared blocking runtime before any listener lifetime starts.
+    // Constructing a transport makes no request to this unused loopback origin.
+    HttpTransport::loopback("http://127.0.0.1:1/", Duration::from_secs(10)).unwrap();
+    guard
+}
+
+pub(super) struct Reply {
     status: u16,
     body: Vec<u8>,
     headers: String,
@@ -26,7 +38,7 @@ impl Reply {
     fn json(value: Value) -> Self {
         Self::raw(200, serde_json::to_vec(&value).unwrap())
     }
-    fn raw(status: u16, body: Vec<u8>) -> Self {
+    pub(super) fn raw(status: u16, body: Vec<u8>) -> Self {
         Self {
             status,
             body,
@@ -41,14 +53,14 @@ impl Reply {
 
 // Every listener binds literal loopback, accepts nonblocking, and has a stop guard.
 // Stream I/O and reply sleeps are bounded even when an assertion unwinds.
-struct Server {
+pub(super) struct Server {
     base: String,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 impl Server {
-    fn new(replies: Vec<Reply>) -> Self {
+    pub(super) fn new(replies: Vec<Reply>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!(
@@ -72,14 +84,15 @@ impl Server {
                     Err(_) => break,
                 };
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 stream
-                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .set_write_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
                 let mut bytes = Vec::new();
                 let mut buffer = [0; 4096];
-                loop {
+                let mut complete = false;
+                while !stopping.load(Ordering::Relaxed) && Instant::now() < end {
                     let n = match stream.read(&mut buffer) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => n,
@@ -97,12 +110,16 @@ impl Server {
                             })
                             .unwrap_or(0);
                         if bytes.len() >= pos + 4 + length {
+                            complete = true;
                             break;
                         }
                     }
                     if bytes.len() > 2 * EVENT_LIMIT {
                         break;
                     }
+                }
+                if !complete {
+                    continue;
                 }
                 seen.lock().unwrap().push(String::from_utf8(bytes).unwrap());
                 let Some(reply) = replies.next() else {
@@ -153,10 +170,10 @@ impl Server {
             worker: Some(worker),
         }
     }
-    fn transport(&self) -> HttpTransport {
+    pub(super) fn transport(&self) -> HttpTransport {
         HttpTransport::loopback(&self.base, Duration::from_secs(10)).unwrap()
     }
-    fn seen(&self) -> Vec<String> {
+    pub(super) fn seen(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
     }
 }
@@ -167,14 +184,14 @@ impl Drop for Server {
     }
 }
 
-fn token() -> SecretToken {
+pub(super) fn token() -> SecretToken {
     SecretToken::new("fixture-secret-token".into()).unwrap()
 }
-fn principal() -> Reply {
+pub(super) fn principal() -> Reply {
     Reply::json(json!({"sub":"fixture-sub", "email":"not-authority@example.test"}))
 }
 
-fn fixture(update: bool) -> Ledger {
+pub(super) fn fixture(update: bool) -> Ledger {
     let binding = Binding {
         provider: "google_calendar".into(),
         account_id: hive_core::GoogleIdentity::new("fixture-sub")
@@ -258,6 +275,27 @@ fn intent(update: bool) -> PreparedFrozenIntent {
     let ledger = fixture(update);
     PreparedFrozenIntent::prepare(&ledger, &ledger.binding, LOGICAL, OPERATION).unwrap()
 }
+
+#[test]
+fn actual_loopback_success_is_not_durable_ack_authority_even_when_pinned() {
+    let _guard = http_test_guard();
+    for update in [false, true] {
+        for phase in [OperationPhase::Prepared, OperationPhase::Uncertain] {
+            let mut old = fixture(update);
+            old.entries[0].pending.as_mut().unwrap().phase = phase;
+            let pinned = ack::fixture_context(old.clone());
+            let mut prepared =
+                PreparedFrozenIntent::prepare(&old, &old.binding, LOGICAL, OPERATION).unwrap();
+            pinned.attach(&mut prepared).unwrap();
+            let server = Server::new(vec![principal(), Reply::json(event(&prepared, false))]);
+            let success = server.transport().reconcile(&token(), &prepared).unwrap();
+            assert_eq!(success.context_digest, prepared.context_digest);
+            assert!(!success.production_origin_eligible());
+            assert!(pinned.admit(success).is_err());
+            assert_eq!(server.seen().len(), 2);
+        }
+    }
+}
 fn event(intent: &PreparedFrozenIntent, prior: bool) -> Value {
     let mut body = managed_body(intent, ownership(intent));
     body["id"] = json!(intent.event_id);
@@ -274,6 +312,7 @@ fn body(request: &str) -> Value {
 
 #[test]
 fn create_and_reconcile_bind_identity_paths_payload_and_origin() {
+    let _guard = http_test_guard();
     let intent = intent(false);
     let server = Server::new(vec![
         principal(),
@@ -326,6 +365,7 @@ fn create_and_reconcile_bind_identity_paths_payload_and_origin() {
 
 #[test]
 fn update_preflights_prior_hash_etag_and_preserves_private_only() {
+    let _guard = http_test_guard();
     let intent = intent(true);
     let mut prior = event(&intent, true);
     prior["extendedProperties"]["private"]["unrelated"] = json!("keep");
@@ -362,6 +402,7 @@ fn update_preflights_prior_hash_etag_and_preserves_private_only() {
 
 #[test]
 fn principal_mismatch_and_invalid_userinfo_never_contact_calendar() {
+    let _guard = http_test_guard();
     for reply in [
         Reply::json(json!({"sub":"wrong"})),
         Reply::json(json!({"email":"fixture-sub"})),
@@ -387,6 +428,7 @@ fn principal_mismatch_and_invalid_userinfo_never_contact_calendar() {
 
 #[test]
 fn invalid_permit_phase_and_origin_make_zero_requests() {
+    let _guard = http_test_guard();
     let intent = intent(false);
     let server = Server::new(vec![]);
     let transport = server.transport();
@@ -423,6 +465,7 @@ fn invalid_permit_phase_and_origin_make_zero_requests() {
 
 #[test]
 fn frozen_intent_rejects_malformed_ledger_delete_wrong_selection_and_old_etag() {
+    let _guard = http_test_guard();
     for variant in 0..9 {
         let mut ledger = fixture(variant >= 4);
         let pending = ledger.entries[0].pending.as_mut().unwrap();
@@ -518,6 +561,7 @@ fn bad_events(intent: &PreparedFrozenIntent, prior: bool) -> Vec<Value> {
 
 #[test]
 fn invalid_remote_classes_never_patch_and_malformed_mutation_is_uncertain() {
+    let _guard = http_test_guard();
     let intent = intent(true);
     let mut invalid = bad_events(&intent, true);
     let mut changed_etag = event(&intent, true);
@@ -559,6 +603,7 @@ fn invalid_remote_classes_never_patch_and_malformed_mutation_is_uncertain() {
 
 #[test]
 fn duplicate_keys_at_all_depths_are_rejected_over_http() {
+    let _guard = http_test_guard();
     let intent = intent(false);
     let original = serde_json::to_string(&event(&intent, false)).unwrap();
     for key in ["id", "date", "hiveOwner"] {
@@ -580,6 +625,7 @@ fn duplicate_keys_at_all_depths_are_rejected_over_http() {
 
 #[test]
 fn statuses_are_static_and_mutations_are_never_retried() {
+    let _guard = http_test_guard();
     let intent = intent(false);
     for (status, expected) in [
         (401, TransportError::Authorization),
@@ -638,6 +684,7 @@ fn statuses_are_static_and_mutations_are_never_retried() {
 
 #[test]
 fn server_failures_are_uncertain_only_for_attempted_mutations() {
+    let _guard = http_test_guard();
     for status in [500, 502, 503, 504] {
         for update in [false, true] {
             let intent = intent(update);
@@ -707,6 +754,7 @@ fn server_failures_are_uncertain_only_for_attempted_mutations() {
 
 #[test]
 fn year_zero_is_invalid_even_when_prior_ack_hash_matches() {
+    let _guard = http_test_guard();
     let mut ledger = fixture(true);
     let payload = ProspectiveEvent {
         summary: "Prior title".into(),
@@ -748,6 +796,7 @@ fn year_zero_is_invalid_even_when_prior_ack_hash_matches() {
 
 #[test]
 fn patch_failure_is_uncertain_only_after_dispatch_and_never_retried() {
+    let _guard = http_test_guard();
     let intent = intent(true);
     for status in [200, 412, 503] {
         let reply = if status == 200 {
@@ -821,6 +870,7 @@ fn patch_failure_is_uncertain_only_after_dispatch_and_never_retried() {
 
 #[test]
 fn redirects_never_contact_secondary_server() {
+    let _guard = http_test_guard();
     let secondary = Server::new(vec![]);
     for userinfo in [true, false] {
         let mut redirect = Reply::raw(302, Vec::new());
@@ -842,6 +892,7 @@ fn redirects_never_contact_secondary_server() {
 
 #[test]
 fn bounded_chunked_oversized_truncated_and_trickled_responses() {
+    let _guard = http_test_guard();
     let intent = intent(false);
     let mut chunked = Reply::json(event(&intent, false));
     chunked.chunked = true;
@@ -890,6 +941,7 @@ fn bounded_chunked_oversized_truncated_and_trickled_responses() {
 
 #[test]
 fn total_deadline_spans_principal_preflight_and_mutation() {
+    let _guard = http_test_guard();
     let intent = intent(true);
     let mut info = principal();
     info.delay = Duration::from_millis(450);
@@ -935,6 +987,7 @@ fn total_deadline_spans_principal_preflight_and_mutation() {
 
 #[test]
 fn secret_etag_endpoints_and_builder_policy() {
+    let _guard = http_test_guard();
     assert_eq!(format!("{:?}", token()), "SecretToken([REDACTED])");
     for bad in ["", " ", "a\r\nb", "a b", "a\tb", "\u{e9}", "=", "a=b"] {
         assert_eq!(

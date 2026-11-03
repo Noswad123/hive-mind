@@ -19,6 +19,10 @@ use crate::{
     ledger, operations,
 };
 
+pub(crate) mod ack;
+mod coordinator;
+mod dispatch;
+
 const USERINFO: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 const CALENDAR: &str = "https://www.googleapis.com/calendar/v3/";
 const USERINFO_LIMIT: usize = 64 * 1024;
@@ -65,6 +69,8 @@ impl fmt::Debug for SecretToken {
 
 // Neither this metadata nor a local Git CAS proves dispatch exclusivity or history.
 struct PreparedFrozenIntent {
+    context_digest: Option<String>,
+    ledger_basis: Option<(String, String, String)>,
     binding: Binding,
     logical_id: String,
     operation_id: String,
@@ -105,6 +111,8 @@ impl PreparedFrozenIntent {
             strong_etag(&prior.etag)?;
         }
         Ok(Self {
+            context_digest: None,
+            ledger_basis: None,
             binding: binding.clone(),
             logical_id: logical.into(),
             operation_id: operation.into(),
@@ -130,6 +138,10 @@ enum ImmutableEndpointOrigin {
 // Move-only capability. Intentionally NO production constructor. Only a future
 // exclusive worker may mint one, separately from Prepared and local ledger CAS.
 struct DispatchPermit {
+    context_digest: Option<String>,
+    ledger_head: Option<String>,
+    owner_nonce: Option<String>,
+    authority: Option<String>,
     binding: Binding,
     logical_id: String,
     operation_id: String,
@@ -141,7 +153,15 @@ struct DispatchPermit {
 impl DispatchPermit {
     #[cfg(test)]
     fn test_permit(intent: &PreparedFrozenIntent, transport: &HttpTransport) -> Self {
+        assert!(
+            matches!(transport.origin, ImmutableEndpointOrigin::Loopback(_)),
+            "test permits are loopback-only"
+        );
         Self {
+            context_digest: None,
+            ledger_head: None,
+            owner_nonce: None,
+            authority: None,
             binding: intent.binding.clone(),
             logical_id: intent.logical_id.clone(),
             operation_id: intent.operation_id.clone(),
@@ -165,6 +185,16 @@ impl DispatchPermit {
             || intent.kind != kind
             || self.origin != transport.origin
             || intent.phase != OperationPhase::Prepared
+            || self.context_digest != intent.context_digest
+            || (self.origin == ImmutableEndpointOrigin::Google
+                && (self.context_digest.as_deref().is_none_or(str::is_empty)
+                    || intent
+                        .ledger_basis
+                        .as_ref()
+                        .is_none_or(|(head, _, _)| self.ledger_head.as_ref() != Some(head))
+                    || self.ledger_head.as_deref().is_none_or(str::is_empty)
+                    || self.owner_nonce.as_deref().is_none_or(str::is_empty)
+                    || self.authority.as_deref().is_none_or(str::is_empty)))
         {
             return Err(TransportError::Invalid);
         }
@@ -181,6 +211,7 @@ enum SuccessCause {
 // Sealed response evidence, deliberately not serializable or convertible to the
 // operator-observation format. GET observation is not proof of dispatch.
 struct ValidatedSuccess {
+    context_digest: Option<String>,
     binding: Binding,
     logical_id: String,
     operation_id: String,
@@ -249,8 +280,12 @@ impl HttpTransport {
         {
             return Err(TransportError::Invalid);
         }
+        // Share only the test runtime/client, never endpoint or operation state.
+        // No default credentials or cookie store; fixture replies close connections.
+        static CLIENT: std::sync::OnceLock<Result<Client>> = std::sync::OnceLock::new();
+        let client = CLIENT.get_or_init(|| Self::client(false)).clone()?;
         Ok(Self {
-            client: Self::client(false)?,
+            client,
             userinfo: base.join("userinfo").unwrap(),
             calendar: base.join("calendar/v3/").unwrap(),
             origin: ImmutableEndpointOrigin::Loopback(base.port().unwrap()),
@@ -484,6 +519,7 @@ impl HttpTransport {
             return Err(TransportError::Unavailable);
         }
         Ok(ValidatedSuccess {
+            context_digest: intent.context_digest.clone(),
             binding: intent.binding.clone(),
             logical_id: intent.logical_id.clone(),
             operation_id: intent.operation_id.clone(),

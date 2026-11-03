@@ -13,6 +13,7 @@ impl<F: Fn(&str) -> Result<()>> BrowserLauncher for FakeBrowser<F> {
 
 fn flow<F: Fn(&str) -> Result<()> + 'static>(browser: F) -> LoopbackFlow {
     LoopbackFlow {
+        profile: AuthProfile::TasksReadonly,
         browser: Box::new(FakeBrowser(browser)),
         timeout: Duration::from_secs(5),
         connection_timeout: Duration::from_secs(2),
@@ -54,70 +55,80 @@ fn request(host: &str, query: &str) -> String {
 
 #[test]
 fn full_flow_binds_before_browser_and_uses_pkce_and_exact_scopes() {
-    let observed = Arc::new(Mutex::new(None));
-    let copy = observed.clone();
-    let worker = Arc::new(Mutex::new(None));
-    let worker_copy = worker.clone();
-    let flow = flow(move |url| {
-        assert!(url.starts_with(AUTHORIZATION_ENDPOINT));
-        assert!(!url.contains("SECRET_CANARY"));
-        let parsed = reqwest::Url::parse(url).unwrap();
-        let fields: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
-        assert_eq!(fields.len(), 10);
-        assert_eq!(fields["scope"], REQUIRED_SCOPES.join(" "));
-        assert_eq!(fields["prompt"], "consent select_account");
-        assert_eq!(fields["response_type"], "code");
-        assert_eq!(fields["access_type"], "offline");
-        assert_eq!(fields["include_granted_scopes"], "false");
-        assert_eq!(fields["code_challenge_method"], "S256");
-        let (host, state, challenge) = parameters(url);
-        assert_eq!(URL_SAFE_NO_PAD.decode(&state).unwrap().len(), 32);
-        *copy.lock().unwrap() = Some((host.clone(), challenge));
-        // The connection must already be possible while open() is running.
-        let mut stream = TcpStream::connect(&host).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(4)))
-            .unwrap();
-        *worker_copy.lock().unwrap() = Some(thread::spawn(move || {
+    assert_eq!(LoopbackFlow::new().profile(), AuthProfile::TasksReadonly);
+    assert_eq!(
+        LoopbackFlow::default().profile().scopes(),
+        crate::REQUIRED_SCOPES
+    );
+    for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+        let observed = Arc::new(Mutex::new(None));
+        let copy = observed.clone();
+        let worker = Arc::new(Mutex::new(None));
+        let worker_copy = worker.clone();
+        let mut flow = flow(move |url| {
+            assert!(url.starts_with(AUTHORIZATION_ENDPOINT));
+            assert!(!url.contains("SECRET_CANARY"));
+            let parsed = reqwest::Url::parse(url).unwrap();
+            let fields: std::collections::HashMap<_, _> =
+                parsed.query_pairs().into_owned().collect();
+            assert_eq!(fields.len(), 10);
+            assert_eq!(fields["scope"], profile.scopes().join(" "));
+            assert_eq!(fields["prompt"], "consent select_account");
+            assert_eq!(fields["response_type"], "code");
+            assert_eq!(fields["access_type"], "offline");
+            assert_eq!(fields["include_granted_scopes"], "false");
+            assert_eq!(fields["code_challenge_method"], "S256");
+            let (host, state, challenge) = parameters(url);
+            assert_eq!(URL_SAFE_NO_PAD.decode(&state).unwrap().len(), 32);
+            *copy.lock().unwrap() = Some((host.clone(), challenge));
+            // The connection must already be possible while open() is running.
+            let mut stream = TcpStream::connect(&host).unwrap();
             stream
-                .write_all(
-                    request(&host, &format!("state={state}&code=CODE_CANARY%2B%26%3D")).as_bytes(),
-                )
+                .set_read_timeout(Some(Duration::from_secs(4)))
                 .unwrap();
-            let mut response = String::new();
-            stream.read_to_string(&mut response).unwrap();
-            assert!(response.starts_with("HTTP/1.1 200 OK"));
-            assert!(response.contains("Authorization response received, return to terminal."));
-            assert!(response.contains("Content-Security-Policy: default-src 'none'"));
-            assert!(response.contains("Cache-Control: no-store"));
-            assert!(response.contains("Referrer-Policy: no-referrer"));
-            assert!(!response.contains("CODE_CANARY"));
-            assert!(!response.contains(&state));
-            assert!(!response.contains("Keychain"));
-        }));
-        Ok(())
-    });
-    let grant = flow.authorize(&client()).unwrap();
-    worker.lock().unwrap().take().unwrap().join().unwrap();
-    assert_eq!(grant.code.expose(), "CODE_CANARY+&=");
-    assert_eq!(
-        URL_SAFE_NO_PAD
-            .decode(grant.verifier.expose())
-            .unwrap()
-            .len(),
-        32
-    );
-    let (host, challenge) = observed.lock().unwrap().clone().unwrap();
-    assert_eq!(
-        challenge,
-        URL_SAFE_NO_PAD.encode(Sha256::digest(grant.verifier.expose().as_bytes()))
-    );
-    assert_eq!(grant.redirect_uri, format!("http://{host}{CALLBACK_PATH}"));
-    assert!(
-        TcpStream::connect(host).is_err(),
-        "one-shot listener must be closed against replay"
-    );
-    assert!(!format!("{grant:?}").contains("CODE_CANARY"));
+            *worker_copy.lock().unwrap() = Some(thread::spawn(move || {
+                stream
+                    .write_all(
+                        request(&host, &format!("state={state}&code=CODE_CANARY%2B%26%3D"))
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).unwrap();
+                assert!(response.starts_with("HTTP/1.1 200 OK"));
+                assert!(response.contains("Authorization response received, return to terminal."));
+                assert!(response.contains("Content-Security-Policy: default-src 'none'"));
+                assert!(response.contains("Cache-Control: no-store"));
+                assert!(response.contains("Referrer-Policy: no-referrer"));
+                assert!(!response.contains("CODE_CANARY"));
+                assert!(!response.contains(&state));
+                assert!(!response.contains("Keychain"));
+            }));
+            Ok(())
+        });
+        flow.profile = profile;
+        let grant = flow.authorize(&client()).unwrap();
+        worker.lock().unwrap().take().unwrap().join().unwrap();
+        assert_eq!(grant.code.expose(), "CODE_CANARY+&=");
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(grant.verifier.expose())
+                .unwrap()
+                .len(),
+            32
+        );
+        let (host, challenge) = observed.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            challenge,
+            URL_SAFE_NO_PAD.encode(Sha256::digest(grant.verifier.expose().as_bytes()))
+        );
+        assert_eq!(grant.redirect_uri, format!("http://{host}{CALLBACK_PATH}"));
+        assert!(
+            TcpStream::connect(host).is_err(),
+            "one-shot listener must be closed against replay"
+        );
+        assert!(!format!("{grant:?}").contains("CODE_CANARY"));
+    }
 }
 
 #[test]

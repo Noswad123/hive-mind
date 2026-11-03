@@ -391,8 +391,9 @@ roll back. Output failure after CAS has the same recovery boundary.
 
 See [macOS persistence evidence](docs/release.md#calendar-local-persistence-checkpoint-2026-11-02)
 and the [architecture contract](docs/product-architecture-roadmap.md#calendar-local-approval-and-persistence).
-Normal-user integration, authenticated provider results and reconciliation (remote
-APIs and Git are not one transaction), hosted CI serialization, pinned Linux runtime, account cost
+Normal-user/private coordinator integration, real provider authentication wiring
+and remote recovery (APIs and Git are not one transaction), hosted CI serialization,
+pinned Linux runtime, account cost
 hard stop, Calendar OAuth/executor, and remote lease/CAS push remain pending. No
 paid service is required by default; Linux remains explicitly deferred, with no
 VM probes or target installs requested. Installed binaries and worker are untouched.
@@ -495,7 +496,8 @@ and clears pending, retaining source ACK/watermark even after current notes vani
 **Ordinary verify AND apply reject this output even with its correct approved SHA.**
 The persisted pending and provider ACK remain unchanged. At the offline checkpoint
 there was no authenticated-success constructor or transport. The private adapter
-below now exists, but authenticated result persistence is still not complete.
+below now exists, and the private in-process ACK-to-local-CAS stage is delivered
+below; neither is activated or makes simulation persistable.
 
 Ledger V1 and enroll/reack Candidate V1 wire formats remain unchanged. New operations
 use V2 ownership records and local apply receipts with operation/intent fields.
@@ -506,7 +508,7 @@ Git CAS coordinates ledger writes, not exclusive API dispatch ownership.
 See the [offline operation contract](docs/product-architecture-roadmap.md#calendar-offline-operation-contract)
 and [macOS evidence](docs/release.md#calendar-offline-operation-checkpoint-2026-11-02).
 Production transport activation/write OAuth/native or hosted secret storage,
-durable authenticated ACK/reconciliation, exclusive dispatch ownership, hosted
+private coordinator/CLI integration, remote-authoritative dispatch ownership, hosted
 workflow/remote CAS push, and billing hard stop remain gates. No paid DB is needed
 for this protocol. Normal-user UI/policy and automatic enrollment remain pending;
 conservative source-basis restrictions are unchanged. Linux is user-deferred with
@@ -537,11 +539,11 @@ properties. No unmanaged-event writes, DELETE, timed events, or recurrence suppo
 Sealed validator results distinguish mutation responses from reconciled observations
 and carry immutable endpoint origin. Test-only literal `127.0.0.1` HTTP results
 are ineligible for production authentication evidence or durable ACK authority.
-No authenticated ACK consumer/reducer/persistence, V3 receipt, exclusive worker, or
-remote Git coordination was added. Simulation, Ledger V1, Candidate V1/V2 and local
-receipts are unchanged; JSON or a `remoteVerified` boolean cannot supply trusted results.
+At the adapter-only checkpoint no ACK consumer or V3 receipt existed; the private
+ACK stage below now adds those local capabilities, not an exclusive worker or remote
+Git coordination. JSON or a `remoteVerified` boolean cannot supply trusted results.
 
-Recorded macOS implementation results: **430 normal workspace passed / 13 ignored**
+Historical adapter-only macOS results: **430 normal workspace passed / 13 ignored**
 (serial locked/offline suite), Calendar **145 normal / 3 ignored**; all **15 actual
 reqwest loopback tests** passed in latest default-parallel and serial runs and the
 full suite. Strict Calendar all-targets Clippy, fmt/build passed. The six real-MW
@@ -551,11 +553,75 @@ behavior. No tests or network operations ran for this documentation update.
 
 See the [adapter contract](docs/product-architecture-roadmap.md#calendar-private-http-adapter)
 and [validation evidence](docs/release.md#calendar-private-http-adapter-checkpoint-2026-11-02).
-Next: trusted in-process results into durable ACK validation/receipts/recovery,
-exclusive authoritative dispatch ownership, credentials/grants, hosted CI/remote
-CAS, cost cap, and Linux validation later before deployment. All remain pending;
-Linux is explicitly deferred with no probes, VMs, or target installs. No actual
-notes/refs/state/provider/credentials/services/installation or capture-worker changes.
+The new local ACK milestone and remaining activation gates follow. Linux remains
+explicitly deferred with no probes, VMs, or target installs.
+
+## Calendar private ACK persistence (dormant)
+
+**PRIVATE in-process ACK -> local CAS code/tests DONE, not activation.** A pre-HTTP
+pinned committed ledger context binds the exact base/path/blob and full pending
+phase to the intent and sealed HTTP result. Google-only admission rejects actual
+loopback origins; operator JSON never becomes authority. Frozen create/update ACKs
+from Prepared or Uncertain set only selected Active/provider ACK/pending None,
+preserving the old ledger's current source ACK, watermark and all unrelated evidence.
+Recovery borrows the retained original transaction and rebuilds the same commit
+from the old base on every retry; a later advanced tip refuses, never rebases.
+
+V3 local ownership/apply receipts validate the parent-ledger transition and retain
+a V3 minimum-reader and provenance floor on subsequent source/intent writes.
+Synthetic test branches remain synthetic and are rejected by production readers,
+even after pending clears. Digests/receipts are audit metadata, not signatures;
+generic publication/remote/ref verification remains false. No new ACK/publish CLI
+or authenticated-JSON path exists: ordinary apply still accepts V1 source and V2
+intent candidates only. Production dispatch authority minting remains unavailable;
+single-use permits, local CAS and nonces are not distributed fencing.
+
+Historical ACK main implementation-session macOS result: default-parallel
+`cargo test --workspace --locked --offline`, **444 normal passed / 13 ignored**;
+Calendar **159 normal / 3 ignored**. Strict Calendar all-targets Clippy, fmt/build
+passed; six explicit real-MW compatibility gates were rerun and passed earlier in
+that session. ACK writer proof is **synthetic handoff + temporary repositories**,
+not a real Google authentication pipeline. Earlier full serial runs failed; no
+444-test serial pass is claimed. See the [ACK contract](docs/product-architecture-roadmap.md#calendar-private-ack-persistence)
+and [evidence and test-stability limits](docs/release.md#calendar-private-ack-checkpoint-2026-11-02).
+
+Remote Git authoritative ownership/fencing, real provider grants/credential wiring,
+full worker integration, hosted push trigger/remote CAS, cost hard stop,
+and Linux validation later before deployment remain gates. No automatic Calendar
+writes run. No actual notes/refs/provider/credentials/private queue/services,
+installed binary/settings, or worker changed. This docs pass runs no tests/builds
+or network operations; fixture writes in the implementation were temporary only.
+
+## Calendar private coordinator (dormant)
+
+**PRIVATE creator-only coordinator seam code/tests DONE, not hosted execution or
+production readiness.** Only a fresh, confirmed exact H0 -> H1 authoritative CAS
+in the same invocation can yield one move-only intent-bound permit. Any existing
+Prepared/Uncertain pending entry means recovery only, never reacquisition, even
+after a lost CAS reply or matching H1 readback. The sealed backend has no production
+implementation or constructor; the dispatch bridge cannot be used in production.
+No new CLI/export, credentials, workflow, or automatic Calendar writes are wired.
+
+`Ready` carries an **H1 policy pin, not a materialized local repository**. A future
+worker must materialize/verify H1 and load the actual local pinned context before
+HTTP or durable ACK, and check the root cancellation/deadline immediately before
+HTTP. Local ACK is not completion: only confirmed exact authoritative ACK CAS is;
+unknown ACK publication may already have committed. Remote ACK recovery is not
+implemented. This is not a remote lease, fencing, or exactly-once guarantee.
+
+Latest supplied main-session macOS evidence: **464 normal workspace passes / 13
+ignored**, `cargo test --workspace --locked --offline -- --test-threads=4`;
+Calendar **179 normal / 3 ignored**, coordinator **20 tests passed serially**.
+Strict Calendar all-targets Clippy, fmt/build passed. Six real-MW gates remain
+historical 444-checkpoint evidence, not rerun for this slice. See the
+[coordinator contract](docs/product-architecture-roadmap.md#calendar-private-creator-only-coordinator)
+and [exact validation limits](docs/release.md#calendar-private-coordinator-checkpoint-2026-11-02).
+Actual fixed-identity remote CAS, full worker/materialized-pin/grant integration,
+authoritative ACK recovery, queue/dispatch operations, source-policy UI, hosted
+workflow, account paid-overage hard stop, and later pinned Linux remain gates.
+Linux is explicitly DEFERRED; no probes, VMs, or target installs. No paid service
+was provisioned. This docs-only pass changes no live state and runs no tests,
+builds, or network operations; no uploads or upload offers.
 
 ## Start a local sync API
 

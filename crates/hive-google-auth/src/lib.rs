@@ -12,10 +12,54 @@ use zeroize::Zeroizing;
 pub const TASKS_SCOPE: &str = "https://www.googleapis.com/auth/tasks.readonly";
 pub const OPENID_SCOPE: &str = "openid";
 pub const REQUIRED_SCOPES: &[&str] = &[TASKS_SCOPE, OPENID_SCOPE];
+pub const CALENDAR_EVENTS_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AuthProfile {
+    #[default]
+    TasksReadonly,
+    CalendarEvents,
+}
+
+impl AuthProfile {
+    pub fn scopes(self) -> &'static [&'static str] {
+        match self {
+            Self::TasksReadonly => REQUIRED_SCOPES,
+            Self::CalendarEvents => &[CALENDAR_EVENTS_SCOPE, OPENID_SCOPE],
+        }
+    }
+
+    pub(crate) fn accepts_scopes(self, scopes: &[String]) -> bool {
+        scopes.len() == self.scopes().len()
+            && self.scopes().iter().all(|required| {
+                scopes
+                    .iter()
+                    .filter(|scope| scope.as_str() == *required)
+                    .count()
+                    == 1
+            })
+    }
+
+    pub(crate) fn service(self) -> &'static str {
+        match self {
+            Self::TasksReadonly => "hive/google-captures/v1",
+            Self::CalendarEvents => "hive/google-calendar/v1",
+        }
+    }
+
+    pub(crate) fn lock_namespace(self) -> &'static str {
+        match self {
+            Self::TasksReadonly => "google-auth",
+            Self::CalendarEvents => "google-calendar-auth",
+        }
+    }
+}
 pub type Result<T> = std::result::Result<T, AuthError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
+    #[error("Google authorization flow and credential store profiles do not match")]
+    ProfileMismatch,
     #[error("invalid connection name; use 1..64 lowercase letters, digits, '-' or '_'")]
     InvalidConnection,
     #[error("invalid Google Desktop OAuth client file")]
@@ -162,6 +206,9 @@ pub struct AccessTokenAttempt {
 
 pub trait CredentialGuard {}
 pub trait CredentialStore: Send + Sync {
+    fn profile(&self) -> AuthProfile {
+        AuthProfile::TasksReadonly
+    }
     fn lock(&self, connection: &str) -> Result<Box<dyn CredentialGuard + '_>>;
     fn load(&self, connection: &str) -> Result<Option<StoredConnection>>;
     fn save(&self, connection: &str, record: &StoredConnection) -> Result<()>;
@@ -174,6 +221,9 @@ pub trait OAuthTransport: Send + Sync {
 }
 
 pub trait AuthorizationFlow {
+    fn profile(&self) -> AuthProfile {
+        AuthProfile::TasksReadonly
+    }
     fn authorize(&self, client: &ClientConfig) -> Result<AuthorizationGrant>;
 }
 

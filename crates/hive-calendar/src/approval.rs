@@ -549,6 +549,8 @@ mod tests {
             ("1", "calendar-operation-candidate"),
             ("2", "calendar-ledger-candidate"),
             ("3", "calendar-operation-candidate"),
+            ("3", "calendar-authenticated-ack"),
+            ("3", "calendar-ack-candidate"),
         ] {
             for remote in [json!(true), json!("verified HTTP private-value")] {
                 let bytes = serde_json::to_vec(&json!({
@@ -1179,7 +1181,7 @@ fn replay_checked(
         path: replayed.base.path,
         expected_blob_id: replayed.base.git_blob_id,
         candidate_ledger: bytes,
-        provider_operation: None,
+        proof: crate::LedgerChangeProof::Source,
     };
     check()?;
     Ok(change)

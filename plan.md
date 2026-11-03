@@ -281,7 +281,8 @@ ACK/pending None but retains frozen source ACK/watermark, even after notes vanis
 **Ordinary verify and apply reject actual simulation output with its correct
 approved SHA**; durable pending/provider ACK remain unchanged. At this offline
 checkpoint there was no transport or authenticated-success constructor; the private
-adapter below now exists, but provider-result persistence is still not done.
+adapter and private local ACK stage below now exist, without production integration
+or activation; simulation remains nonpersistable.
 
 Ledger V1 and strict enroll/reack Candidate V1 remain unchanged. New strict V2
 `calendar-operation-candidate` (`prepare`/`mark_uncertain`) uses full replay and
@@ -333,11 +334,12 @@ Unavailable with no write. 409 is collision for later explicit reconciliation;
 Sealed validator-only results bind principal namespace, frozen intent/event/etag/
 hash, cause and immutable origin, without serde/public constructor or durable ACK
 authority. Literal loopback test evidence cannot become production authentication
-proof. No ACK consumer/reducer/persistence/V3 receipt, exclusive worker or remote
-Git coordination was added; operator simulation and V1/V2 formats remain unchanged.
+proof. At that adapter-only checkpoint no ACK consumer/reducer/persistence/V3 receipt
+existed; the next stage below adds local durability, not an exclusive worker or
+remote Git coordination. Operator simulation and V1/V2 candidate formats remain unchanged.
 See [contract](docs/product-architecture-roadmap.md#calendar-private-http-adapter).
 
-Latest recorded main-session macOS validation: **430 normal workspace passed,
+Historical adapter-only main-session macOS validation: **430 normal workspace passed,
 13 ignored**, serial `cargo test --workspace --locked --offline -- --test-threads=1`;
 Calendar **145 normal/3 ignored**. All **15 actual reqwest loopback tests** passed
 latest default-parallel and serial runs plus full suite; strict Calendar all-targets
@@ -350,6 +352,126 @@ No actual notes/refs/state/provider/credentials/workflow/billing/installation or
 capture-worker changes. Dependencies add declared references only, no lockfile
 version upgrades/downgrades. This docs pass runs no tests/network/services or state
 operations. See [adapter evidence](docs/release.md#calendar-private-http-adapter-checkpoint-2026-11-02).
+
+**PRIVATE in-process ACK -> local CAS code/tests DONE, NOT activation.**
+`calendar_transport/ack.rs` pins exact committed base/path/blob, old ledger and
+full pending (including phase) before HTTP, attaching `contextDigest` to intent
+and sealed result. Google-only admission matches all basis/namespace/IDs/intent/
+event/hash/strong-ETag evidence; actual loopback origin is always refused. No JSON
+or trust flag creates ACK authority. Explicit `LedgerChangeProof` separates Source,
+Intent and Acknowledgement with private-constructor `SealedAckProof`. Ordinary public
+apply remains V1 source/V2 intent only: no new ACK/publish CLI or authenticated JSON.
+
+Prepared/Uncertain create/update ACKs need no current source/parser/task eligibility.
+Only selected Active/provider ACK/result/pending None change; CURRENT old source ACK
+(not intendedSource), watermark/order/tombstones/unselected evidence stay intact.
+GET `ReconciledObservation` is not worker-dispatch proof. Borrowed
+`PinnedAckTransaction` retains original base/result through errors and rebuilds
+the same commit from OLD base each retry, even after latest pending clears. Exact
+retry succeeds without writes; later advancement refuses, never rebases. Bare,
+fixed-ref, no-worktree, exclusive-admin, CAS and cancellation policies are unchanged.
+
+V3 owned/apply receipts validate old parent ledger/full pending phase/result and
+exact new reduction. V1/V2 goldens stay unchanged; all following Source/Intent writes
+stay V3, without minimum-reader downgrade. Audit/provenance floors distinguish
+GoogleAuthenticated and TEST-ONLY SyntheticFixture. Test factories force Synthetic
+and recompute digests, never Google from loopback; all synthetic continuations
+retain that floor. Production excludes the variant and rejects fixture branches,
+including after pending clears. Digests/receipts are not signatures. Generic
+publication/remote/ref verification stays false, not a current-remote-sync claim.
+
+At the ACK checkpoint, dispatch child opaque `RemoteDispatchAuthority` + `FreshAuthoritativeView` were
+consumed against head/path/blob/context/owner nonce/intent/origin/Prepared matching,
+without production constructors, Serde or Clone. Google permits require authority
+basis; test factories are loopback-only. This is NOT remote leasing/fencing: local
+CAS/nonces/freshness and single-use values cannot stop a paused old cross-host
+worker; no expiry takeover exists. Production minting/safe remote ownership remains
+UNIMPLEMENTED. The creator-only coordinator seam below adds fixture-backed acquisition,
+not production authority. See [ACK contract](docs/product-architecture-roadmap.md#calendar-private-ack-persistence).
+
+Historical ACK FINAL GREEN in the main implementation session: default-parallel
+`cargo test --workspace --locked --offline`, **444 normal PASS / 13 ignored**;
+Calendar **159 normal / 3 ignored**. Strict Calendar all-targets Clippy `-D warnings`,
+fmt/build passed. All six real-MW compatibility gates reran earlier this session
+and passed (CLI apply x2, candidate, plan, preview, source). New ACK writer tests
+are synthetic trusted handoff/TEMP repos, NOT a real Google authentication pipeline.
+Actual loopback admission refusal, frozen create/update/both phases, tamper,
+SHA-1/SHA-256 V3 CAS/exact retry after injected post-CAS unknown, later-advance refusal,
+continuation floors and reader compatibility passed. Focused review: no P1/P2 for
+private local ACK under bare/exclusive administration, not production approval.
+
+Earlier full serial/default runs failed. Test-only capture output-cap timeout became
+2 seconds (separate 100 ms timeout case retained); production capture runner did not
+change. HTTP fixtures now record complete headers/body without consuming replies on
+empty requests, use 10-second stream timeouts and one mutex per HTTP test, plus a
+cfg(test) shared OnceLock blocking client/pre-listener warmup. Production HTTP config,
+error classes, request-count assertions and retries were not relaxed. Root cause is
+NOT established: accepted=1/complete=0 reproduced and ended on cleanup, not lifetime
+expiry; slow-client-build theory did not reproduce. After pooling, bounded-response
+passed ten consecutive times, 16 HTTP tests including ACK twice serial plus parallel
+module passed, then Calendar 159 parallel and final workspace 444 parallel passed.
+**No full serial 444 pass is claimed.** See [full stability evidence](docs/release.md#calendar-private-ack-checkpoint-2026-11-02).
+Older 430/415/389 checkpoints remain historical. Tests were run by the implementation
+session, not the user or this docs pass. No actual notes/source/refs/Google/Keychain,
+private queue/credentials/services/binary/settings/worker, deployment/secrets/billing
+or Git commit/push changed; implementation writes were TEMP-only. Linux remains
+explicitly deferred without probes/VMs/targets; no tests/builds/network ran for docs.
+
+**PRIVATE CREATOR-ONLY COORDINATOR SEAM code/tests DONE, not hosted execution.**
+Private `calendar_transport/coordinator.rs` seals `AuthoritativeState`; no production
+backend implementation/constructor, credential wiring, CLI/export or workflow exists.
+The dispatch code is a receipt-consuming bridge, not a usable production factory.
+Only fresh successful exact H0 -> H1 CAS in the SAME invocation produces opaque
+`FreshCasReceipt`, consumed once with its invocation nonce and exact latest
+head/path/blob/binding/authority ID/origin. Any Prepared/Uncertain pending anywhere
+in the binding returns `RecoverOnly` before staging/publication. Own old head,
+same-job rerun, copied nonce, local ApplyReceipt/`already_applied`, logs or matching
+H1 readback cannot acquire. No expiry/steal/reset/reprepare or blind retry exists.
+
+Staging checks actual sole-parent H1 objects in the fixture backend and exact
+single-prepare ledger semantics, retaining source/provider ACKs, watermark, order,
+tombstones and unrelated entries. Source eligibility is delegated to the preparer,
+not freshly validated against notes by the coordinator. Root checks after CAS/latest
+view and after CPU mint discard Ready on cancellation/expiry as PublicationUnknown;
+the consumed receipt cannot retry, and the next invocation sees recovery-only pending.
+Caller MUST still check the root before HTTP: this is not atomic revocation.
+
+Ready's context is an **H1 policy pin (not H0), with default/empty repository path**.
+Full worker integration must materialize/verify H1 and load actual local PinnedContext
+with a real repository before HTTP/durable ACK. The slice is NOT a full HTTP + local
+ACK + authoritative publication executor. Separate ACK policy has no production
+AckPublication builder; Completed requires confirmed exact authoritative ACK CAS,
+not local ACK objects, unknown or conflict. Post-publication root cancellation is
+unknown. Lost ACK replies may mean committed H2/pending cleared, not always unchanged
+pending; no repeated provider write and no implemented remote ACK readback recovery.
+
+Latest macOS implementation-session evidence:
+`cargo test --workspace --locked --offline -- --test-threads=4`, **464 normal PASS /
+13 ignored**; Calendar **179 normal / 3 ignored**; new coordinator **20 tests passed
+serially**, including post-mint cancellation/expiry discard and next-invocation
+no-publication. Strict Calendar all-targets Clippy `-D warnings`, fmt/build passed.
+The prior filtered transport subset passed 43 tests with 19 coordinator tests;
+all current 44 transport tests were included in the full workspace run, but no
+separate 44-test serial target run was performed. Six real-MW gates
+remain historical 444-checkpoint passes, NOT rerun; no new MW gate. Main CLI final
+`clippy --no-deps` passed with four existing legacy warnings, not claimed fixed.
+Focused review readiness is private protocol only,
+not publisher readiness. See [contract](docs/product-architecture-roadmap.md#calendar-private-creator-only-coordinator)
+and [release evidence](docs/release.md#calendar-private-coordinator-checkpoint-2026-11-02).
+
+Test-only in-memory and owned TEMP bare authority adapters use a separate local
+worker bare repo, bounded local Git packs and exact atomic `git update-ref NEW OLD`,
+not ordinary push. Only loopback HTTP; Synthetic V3 ACK stays local fixture evidence,
+never Google, and actual loopback results still fail the private ACK gate. Local
+CAS/nonce/latest view is NOT remote lease/fencing/exactly-once: a paused creator may
+make its late first attempt, but a second invocation never writes. Non-ABA stale/
+advanced/rollback/missing heads fail without rewind; Git ABA/admin rewind is out of
+scope and needs cooperative writers/exclusive admin/remote controls later. Actual
+remote CAS must prove exact expected OLD in a server-atomic transaction; unconditional
+REST ref update, ordinary FF push or readback is insufficient. No actual user refs,
+notes, provider, credentials, services, installs, worker, CI, secrets or billing
+changed, and no paid service was provisioned. Linux remains explicitly DEFERRED,
+with no probes/VMs/targets. No tests/builds/network or uploads/offers in this docs pass.
 
 Delivery gates:
 
@@ -377,10 +499,19 @@ Delivery gates:
       persistence, and explicitly nonpersistable operator-asserted ACK simulation.
 - [x] Implement the dormant private HTTP adapter and local loopback tests only;
       no production dispatch permit constructor or activation.
-- [ ] Connect trusted in-process results to durable ACK validation/receipts/recovery,
-      authenticated success ACK candidates,
-      durable ACK CAS/reconciliation, and exclusive dispatch ownership, not just Git
-      CAS. A remote API operation and Git persistence are not one transaction.
+- [x] Implement private pinned in-process ACK validation/reduction, V3 receipts and
+      local CAS/exact recovery, synthetic test floors and gated dispatch seam only.
+      Code/tests DONE, not activation or real Google authentication-pipeline proof.
+- [x] Deliver the private creator-only coordinator protocol seam and TEMP backend
+      tests, not a production backend, publisher or full worker integration.
+- [ ] Deliver full worker integration, materialized/verified H1 local pin and real
+      provider grants/credentials; implement authoritative ACK readback/recovery.
+- [ ] Deliver queue/dispatch policy operations and source-policy/approval UI.
+- [ ] Implement separately reviewed fixed-identity remote exact-OLD CAS backend;
+      unconditional REST ref updates, ordinary FF pushes and readback do not suffice.
+- [ ] Implement remote Git authoritative ownership/fencing beyond single-use values
+      and local CAS; a paused cross-host worker is not fenced by local freshness.
+      A remote API operation and Git persistence are not one transaction.
 - [ ] Implement hosted CI serialization and remote lease/CAS push; local CAS is not
       remote-ref proof, remote synchronization, or authorization to deploy.
 - [ ] Package a pinned Linux artifact and validate its runtime later before deployment.

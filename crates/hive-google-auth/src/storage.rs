@@ -2,14 +2,13 @@
 //! not hardware binding. Callers must hold `lock` across load/network/save (and
 //! status reads); load/save deliberately never acquire a second lock.
 use crate::{
-    AuthError, ClientConfig, CredentialGuard, CredentialStore, GoogleIdentity, GrantRecord,
-    REQUIRED_SCOPES, Result, SecretString, StoredConnection, validate_connection,
+    AuthError, AuthProfile, ClientConfig, CredentialGuard, CredentialStore, GoogleIdentity,
+    GrantRecord, Result, SecretString, StoredConnection, validate_connection,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
-const SERVICE: &str = "hive/google-captures/v1";
 const MAX_RECORD: usize = 64 * 1024;
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -24,31 +23,48 @@ pub fn system_user_home() -> Result<PathBuf> {
 /// Construction resolves the OS user's home but creates no files and performs
 /// no Keychain I/O. App configuration must never split the credential lock domain.
 pub struct MacKeychainStore {
+    profile: AuthProfile,
     lock_dir: PathBuf,
     background: bool,
 }
 
 impl MacKeychainStore {
     pub fn new() -> Result<Self> {
+        Self::for_profile(AuthProfile::TasksReadonly)
+    }
+
+    pub fn for_profile(profile: AuthProfile) -> Result<Self> {
         #[cfg(target_os = "macos")]
-        return Self::with_os_home(os_user_home, false);
+        return Self::with_profile_os_home(os_user_home, false, profile);
         #[cfg(not(target_os = "macos"))]
-        Err(AuthError::UnsupportedPlatform)
+        {
+            let _ = profile;
+            Err(AuthError::UnsupportedPlatform)
+        }
     }
 
     /// Uses the same credentials and lock as `new`, but fails rather than
     /// displaying authentication UI on any Keychain read or write.
     pub fn new_background() -> Result<Self> {
         #[cfg(target_os = "macos")]
-        return Self::with_os_home(os_user_home, true);
+        return Self::with_profile_os_home(os_user_home, true, AuthProfile::TasksReadonly);
         #[cfg(not(target_os = "macos"))]
         Err(AuthError::UnsupportedPlatform)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     fn with_os_home(
         resolve: impl FnOnce(libc::uid_t) -> Result<PathBuf>,
         background: bool,
+    ) -> Result<Self> {
+        Self::with_profile_os_home(resolve, background, AuthProfile::TasksReadonly)
+    }
+
+    #[cfg(unix)]
+    fn with_profile_os_home(
+        resolve: impl FnOnce(libc::uid_t) -> Result<PathBuf>,
+        background: bool,
+        profile: AuthProfile,
     ) -> Result<Self> {
         let home =
             resolve(unsafe { libc::geteuid() }).map_err(|_| AuthError::StorageUnavailable)?;
@@ -63,7 +79,10 @@ impl MacKeychainStore {
             return Err(AuthError::StorageUnavailable);
         }
         Ok(Self {
-            lock_dir: home.join("Library/Application Support/Hive/google-auth"),
+            profile,
+            lock_dir: home
+                .join("Library/Application Support/Hive")
+                .join(profile.lock_namespace()),
             background,
         })
     }
@@ -71,6 +90,7 @@ impl MacKeychainStore {
     #[cfg(all(test, unix))]
     fn with_lock_dir(lock_dir: PathBuf) -> Self {
         Self {
+            profile: AuthProfile::TasksReadonly,
             lock_dir,
             background: false,
         }
@@ -111,6 +131,10 @@ fn os_user_home(uid: libc::uid_t) -> Result<PathBuf> {
 }
 
 impl CredentialStore for MacKeychainStore {
+    fn profile(&self) -> AuthProfile {
+        self.profile
+    }
+
     fn lock(&self, connection: &str) -> Result<Box<dyn CredentialGuard + '_>> {
         validate_connection(connection)?;
         #[cfg(target_os = "macos")]
@@ -128,6 +152,7 @@ impl CredentialStore for MacKeychainStore {
         #[cfg(target_os = "macos")]
         return load_with(
             &NativeKeychain {
+                profile: self.profile,
                 background: self.background,
             },
             connection,
@@ -141,6 +166,7 @@ impl CredentialStore for MacKeychainStore {
         #[cfg(target_os = "macos")]
         return save_with(
             &NativeKeychain {
+                profile: self.profile,
                 background: self.background,
             },
             connection,
@@ -157,12 +183,16 @@ impl CredentialStore for MacKeychainStore {
 // The backend boundary exposes only numeric OSStatus values, never native error
 // messages or Debug output. Tests use fakes, never the user's Keychain.
 trait KeychainBackend {
+    fn profile(&self) -> AuthProfile {
+        AuthProfile::TasksReadonly
+    }
     fn read(&self, account: &str) -> std::result::Result<Zeroizing<Vec<u8>>, i32>;
     fn write(&self, account: &str, bytes: &[u8]) -> std::result::Result<(), i32>;
 }
 
 #[cfg(target_os = "macos")]
 struct NativeKeychain {
+    profile: AuthProfile,
     background: bool,
 }
 
@@ -174,9 +204,15 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-fn options(account: &str, background: bool) -> security_framework::passwords::PasswordOptions {
-    let mut options =
-        security_framework::passwords::PasswordOptions::new_generic_password(SERVICE, account);
+fn options(
+    account: &str,
+    background: bool,
+    profile: AuthProfile,
+) -> security_framework::passwords::PasswordOptions {
+    let mut options = security_framework::passwords::PasswordOptions::new_generic_password(
+        profile.service(),
+        account,
+    );
     options.set_access_synchronized(Some(false));
     if background {
         use core_foundation::{base::TCFType, string::CFString};
@@ -197,17 +233,24 @@ fn options(account: &str, background: bool) -> security_framework::passwords::Pa
 
 #[cfg(target_os = "macos")]
 impl KeychainBackend for NativeKeychain {
+    fn profile(&self) -> AuthProfile {
+        self.profile
+    }
     fn read(&self, account: &str) -> std::result::Result<Zeroizing<Vec<u8>>, i32> {
-        security_framework::passwords::generic_password(options(account, self.background))
-            .map(Zeroizing::new)
-            .map_err(|e| e.code())
+        security_framework::passwords::generic_password(options(
+            account,
+            self.background,
+            self.profile,
+        ))
+        .map(Zeroizing::new)
+        .map_err(|e| e.code())
     }
 
     fn write(&self, account: &str, bytes: &[u8]) -> std::result::Result<(), i32> {
         // SecItemAdd, then SecItemUpdate on duplicate; never delete/re-add.
         security_framework::passwords::set_generic_password_options(
             bytes,
-            options(account, self.background),
+            options(account, self.background, self.profile),
         )
         .map_err(|e| e.code())
     }
@@ -225,7 +268,7 @@ fn native_error(code: i32) -> AuthError {
 fn load_with(backend: &impl KeychainBackend, connection: &str) -> Result<Option<StoredConnection>> {
     validate_connection(connection)?;
     match backend.read(connection) {
-        Ok(bytes) => decode(connection, &bytes).map(Some),
+        Ok(bytes) => decode_for(backend.profile(), connection, &bytes).map(Some),
         Err(-25300) => Ok(None), // errSecItemNotFound is only absence on reads.
         Err(code) => Err(native_error(code)),
     }
@@ -236,7 +279,7 @@ fn save_with(
     connection: &str,
     record: &StoredConnection,
 ) -> Result<()> {
-    let bytes = encode(connection, record)?;
+    let bytes = encode_for(backend.profile(), connection, record)?;
     backend.write(connection, &bytes).map_err(native_error)
 }
 
@@ -294,7 +337,11 @@ struct WireRecord {
     grant: Option<WireGrant>,
 }
 
-fn validate_record(connection: &str, record: &StoredConnection) -> Result<()> {
+fn validate_record(
+    profile: AuthProfile,
+    connection: &str,
+    record: &StoredConnection,
+) -> Result<()> {
     validate_connection(connection)?;
     if record.version != 1
         || record.generation == 0
@@ -322,10 +369,7 @@ fn validate_record(connection: &str, record: &StoredConnection) -> Result<()> {
                 .client_secret
                 .as_ref()
                 .is_some_and(|s| !valid_secret(s))
-            || grant.scopes.len() != REQUIRED_SCOPES.len()
-            || !REQUIRED_SCOPES
-                .iter()
-                .all(|scope| grant.scopes.iter().filter(|s| s.as_str() == *scope).count() == 1)
+            || !profile.accepts_scopes(&grant.scopes)
         {
             return Err(AuthError::StorageCorrupt);
         }
@@ -348,8 +392,12 @@ impl std::io::Write for BoundedBytes {
     }
 }
 
-fn encode(connection: &str, record: &StoredConnection) -> Result<Zeroizing<Vec<u8>>> {
-    validate_record(connection, record)?;
+fn encode_for(
+    profile: AuthProfile,
+    connection: &str,
+    record: &StoredConnection,
+) -> Result<Zeroizing<Vec<u8>>> {
+    validate_record(profile, connection, record)?;
     let wire = WireRecord {
         version: record.version,
         connection: record.connection.clone(),
@@ -371,7 +419,7 @@ fn encode(connection: &str, record: &StoredConnection) -> Result<Zeroizing<Vec<u
     Ok(bytes.0)
 }
 
-fn decode(connection: &str, bytes: &[u8]) -> Result<StoredConnection> {
+fn decode_for(profile: AuthProfile, connection: &str, bytes: &[u8]) -> Result<StoredConnection> {
     validate_connection(connection)?;
     if bytes.is_empty() || bytes.len() > MAX_RECORD {
         return Err(AuthError::StorageCorrupt);
@@ -391,7 +439,7 @@ fn decode(connection: &str, bytes: &[u8]) -> Result<StoredConnection> {
             scopes: grant.scopes,
         }),
     };
-    validate_record(connection, &record)?;
+    validate_record(profile, connection, &record)?;
     Ok(record)
 }
 
@@ -535,6 +583,150 @@ impl FileLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::REQUIRED_SCOPES;
+
+    fn encode(connection: &str, record: &StoredConnection) -> Result<Zeroizing<Vec<u8>>> {
+        encode_for(AuthProfile::TasksReadonly, connection, record)
+    }
+
+    fn decode(connection: &str, bytes: &[u8]) -> Result<StoredConnection> {
+        decode_for(AuthProfile::TasksReadonly, connection, bytes)
+    }
+
+    #[test]
+    fn profile_codecs_reject_cross_combined_extra_and_duplicate_scopes() {
+        for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+            let mut original = record();
+            let exact: Vec<String> = profile.scopes().iter().map(|s| (*s).into()).collect();
+            original.grant.as_mut().unwrap().scopes = exact.clone();
+            let bytes = encode_for(profile, "work", &original).unwrap();
+            assert_eq!(
+                decode_for(profile, "work", &bytes)
+                    .unwrap()
+                    .grant
+                    .unwrap()
+                    .scopes,
+                exact
+            );
+            let other = if profile == AuthProfile::TasksReadonly {
+                AuthProfile::CalendarEvents
+            } else {
+                AuthProfile::TasksReadonly
+            };
+            assert!(matches!(
+                decode_for(other, "work", &bytes),
+                Err(AuthError::StorageCorrupt)
+            ));
+            for scopes in [
+                other.scopes().iter().map(|s| (*s).into()).collect(),
+                vec![
+                    crate::TASKS_SCOPE.into(),
+                    crate::CALENDAR_EVENTS_SCOPE.into(),
+                    "openid".into(),
+                ],
+                [exact.clone(), vec!["extra".into()]].concat(),
+                vec![exact[0].clone(), exact[0].clone()],
+                [exact.clone(), vec!["openid".into()]].concat(),
+            ] {
+                original.grant.as_mut().unwrap().scopes = scopes.clone();
+                assert!(matches!(
+                    encode_for(profile, "work", &original),
+                    Err(AuthError::StorageCorrupt)
+                ));
+                let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                wire["grant"]["scopes"] = serde_json::to_value(scopes).unwrap();
+                assert!(matches!(
+                    decode_for(profile, "work", &serde_json::to_vec(&wire).unwrap()),
+                    Err(AuthError::StorageCorrupt)
+                ));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn profile_namespaces_isolate_same_alias_without_native_io() {
+        use core_foundation::{base::TCFType, string::CFString};
+        use std::{collections::HashMap, sync::Mutex, time::Duration};
+        type Records = Mutex<HashMap<(&'static str, String), Zeroizing<Vec<u8>>>>;
+        struct Memory<'a>(AuthProfile, &'a Records);
+        impl KeychainBackend for Memory<'_> {
+            fn profile(&self) -> AuthProfile {
+                self.0
+            }
+            fn read(&self, account: &str) -> std::result::Result<Zeroizing<Vec<u8>>, i32> {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .get(&(self.0.service(), account.into()))
+                    .cloned()
+                    .ok_or(-25300)
+            }
+            fn write(&self, account: &str, bytes: &[u8]) -> std::result::Result<(), i32> {
+                self.1.lock().unwrap().insert(
+                    (self.0.service(), account.into()),
+                    Zeroizing::new(bytes.to_vec()),
+                );
+                Ok(())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let records = Records::default();
+        let tasks = Memory(AuthProfile::TasksReadonly, &records);
+        let calendar = Memory(AuthProfile::CalendarEvents, &records);
+        let tasks_store = MacKeychainStore::with_os_home(|_| Ok(home.clone()), false).unwrap();
+        let calendar_store =
+            MacKeychainStore::with_profile_os_home(|_| Ok(home.clone()), false, calendar.0)
+                .unwrap();
+        assert_eq!(tasks_store.profile(), AuthProfile::TasksReadonly);
+        assert_eq!(calendar_store.profile(), AuthProfile::CalendarEvents);
+        assert_eq!(
+            calendar_store.lock_dir,
+            home.join("Library/Application Support/Hive/google-calendar-auth")
+        );
+        assert_eq!(calendar.0.service(), "hive/google-calendar/v1");
+        let _tasks_lock = FileLock::acquire(&tasks_store.lock_dir, "work", Duration::ZERO).unwrap();
+        let _calendar_lock =
+            FileLock::acquire(&calendar_store.lock_dir, "work", Duration::ZERO).unwrap();
+        for profile in [tasks.0, calendar.0] {
+            let options = options("work", false, profile);
+            let key = unsafe {
+                CFString::wrap_under_get_rule(security_framework_sys::item::kSecAttrService)
+            };
+            #[allow(deprecated)]
+            let service = options
+                .query
+                .iter()
+                .find(|(k, _)| *k == key)
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(service, CFString::new(profile.service()).into_CFType());
+        }
+        save_with(&tasks, "work", &record()).unwrap();
+        let tasks_bytes = records.lock().unwrap()[&(tasks.0.service(), "work".into())].clone();
+        assert!(load_with(&calendar, "work").unwrap().is_none());
+        let mut calendar_record = record();
+        calendar_record.grant.as_mut().unwrap().scopes =
+            calendar.0.scopes().iter().map(|s| (*s).into()).collect();
+        save_with(&calendar, "work", &calendar_record).unwrap();
+        calendar_record.generation += 1;
+        calendar_record.grant = None;
+        save_with(&calendar, "work", &calendar_record).unwrap();
+        assert!(
+            load_with(&calendar, "work")
+                .unwrap()
+                .unwrap()
+                .grant
+                .is_none()
+        );
+        assert_eq!(
+            &*records.lock().unwrap()[&(tasks.0.service(), "work".into())],
+            &*tasks_bytes
+        );
+        assert!(load_with(&tasks, "work").unwrap().unwrap().grant.is_some());
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -545,7 +737,7 @@ mod tests {
         };
 
         for background in [false, true] {
-            let options = options("work", background);
+            let options = options("work", background, AuthProfile::TasksReadonly);
             #[allow(deprecated)]
             let query = &options.query;
             let value = |key| {
@@ -557,7 +749,7 @@ mod tests {
             assert_eq!(query.len(), if background { 5 } else { 4 });
             assert_eq!(
                 value(unsafe { kSecAttrService }),
-                Some(CFString::new(SERVICE).into_CFType())
+                Some(CFString::new(AuthProfile::TasksReadonly.service()).into_CFType())
             );
             assert_eq!(
                 value(unsafe { kSecAttrAccount }),
@@ -793,7 +985,10 @@ mod tests {
             save_with(&Fake(-25300), "work", &record()).unwrap_err(),
             AuthError::StorageUnavailable
         );
-        assert_eq!(SERVICE, "hive/google-captures/v1");
+        assert_eq!(
+            AuthProfile::TasksReadonly.service(),
+            "hive/google-captures/v1"
+        );
     }
 
     #[cfg(unix)]

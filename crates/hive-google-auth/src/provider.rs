@@ -1,8 +1,8 @@
 //! Explicit, account-bound credential operations. No access-token cache or implicit sign-in.
 use crate::{
-    AccessTokenAttempt, AuthError, AuthorizationFlow, BoundAccessToken, ClientConfig,
-    ConnectionStatus, CredentialStore, GrantRecord, OAuthTransport, REQUIRED_SCOPES, Result,
-    SecretString, StoredConnection, TokenSet, validate_connection,
+    AccessTokenAttempt, AuthError, AuthProfile, AuthorizationFlow, BoundAccessToken, ClientConfig,
+    ConnectionStatus, CredentialStore, GrantRecord, OAuthTransport, Result, SecretString,
+    StoredConnection, TokenSet, validate_connection,
 };
 
 pub struct Authenticator<'a> {
@@ -22,18 +22,21 @@ impl<'a> Authenticator<'a> {
         flow: &dyn AuthorizationFlow,
     ) -> Result<ConnectionStatus> {
         validate_connection(connection)?;
+        if flow.profile() != self.store.profile() {
+            return Err(AuthError::ProfileMismatch);
+        }
         let _guard = self.store.lock(connection)?;
         validate_client(client)?;
         let old = self.store.load(connection)?;
         if let Some(record) = &old {
-            validate_record(connection, record)?;
+            validate_record(self.store.profile(), connection, record)?;
         }
         // Keep the lock through authorization, so logout cannot race a browser session.
         let grant = flow.authorize(client)?;
         let tokens = self.transport.exchange(client, &grant)?;
         validate_tokens(&tokens)?;
         let scopes = tokens.scopes.as_ref().ok_or_else(|| scope_mismatch(None))?;
-        validate_scopes(scopes)?;
+        validate_scopes(self.store.profile(), scopes)?;
         let refresh_token = tokens.refresh_token.ok_or(AuthError::InvalidResponse)?;
         let identity = self.transport.identity(&tokens.access_token)?;
         identity
@@ -79,7 +82,7 @@ impl<'a> Authenticator<'a> {
                 .store
                 .load(connection)?
                 .ok_or(AuthError::NotConnected)?;
-            validate_record(connection, &record)?;
+            validate_record(self.store.profile(), connection, &record)?;
             generation = Some(record.generation);
             let grant = record.grant.as_ref().ok_or(AuthError::NotConnected)?;
             let tokens = self
@@ -87,7 +90,7 @@ impl<'a> Authenticator<'a> {
                 .refresh(&grant.client, &grant.refresh_token)?;
             validate_tokens(&tokens)?;
             if let Some(scopes) = &tokens.scopes {
-                validate_scopes(scopes)?;
+                validate_scopes(self.store.profile(), scopes)?;
             }
             if let Some(refresh_token) = tokens.refresh_token
                 && refresh_token.expose() != grant.refresh_token.expose()
@@ -129,7 +132,7 @@ impl<'a> Authenticator<'a> {
         let _guard = self.store.lock(connection)?;
         let record = self.store.load(connection)?;
         if let Some(record) = &record {
-            validate_record(connection, record)?;
+            validate_record(self.store.profile(), connection, record)?;
         }
         connection_status(connection, record.as_ref())
     }
@@ -142,7 +145,7 @@ impl<'a> Authenticator<'a> {
         let Some(mut record) = record else {
             return connection_status(connection, None);
         };
-        validate_record(connection, &record)?;
+        validate_record(self.store.profile(), connection, &record)?;
         if record.grant.is_some() {
             record.generation = next_generation(Some(&record))?;
             record.grant = None;
@@ -179,12 +182,8 @@ fn validate_client(client: &ClientConfig) -> Result<()> {
     Ok(())
 }
 
-fn validate_scopes(scopes: &[String]) -> Result<()> {
-    if scopes.len() != REQUIRED_SCOPES.len()
-        || !REQUIRED_SCOPES
-            .iter()
-            .all(|required| scopes.iter().filter(|s| s.as_str() == *required).count() == 1)
-    {
+fn validate_scopes(profile: AuthProfile, scopes: &[String]) -> Result<()> {
+    if !profile.accepts_scopes(scopes) {
         return Err(scope_mismatch(Some(scopes)));
     }
     Ok(())
@@ -233,7 +232,11 @@ fn validate_tokens(tokens: &TokenSet) -> Result<()> {
     Ok(())
 }
 
-fn validate_record(connection: &str, record: &StoredConnection) -> Result<()> {
+fn validate_record(
+    profile: AuthProfile,
+    connection: &str,
+    record: &StoredConnection,
+) -> Result<()> {
     if record.version != 1 || record.connection != connection || record.generation == 0 {
         return Err(AuthError::StorageCorrupt);
     }
@@ -243,7 +246,7 @@ fn validate_record(connection: &str, record: &StoredConnection) -> Result<()> {
         .map_err(|_| AuthError::StorageCorrupt)?;
     if let Some(grant) = &record.grant {
         validate_client(&grant.client).map_err(|_| AuthError::StorageCorrupt)?;
-        validate_scopes(&grant.scopes).map_err(|_| AuthError::StorageCorrupt)?;
+        validate_scopes(profile, &grant.scopes).map_err(|_| AuthError::StorageCorrupt)?;
         validate_secret(&grant.refresh_token).map_err(|_| AuthError::StorageCorrupt)?;
     }
     Ok(())
@@ -277,7 +280,7 @@ fn connection_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AuthorizationGrant, CredentialGuard, GoogleIdentity};
+    use crate::{AuthorizationGrant, CredentialGuard, GoogleIdentity, REQUIRED_SCOPES};
     use std::{
         collections::HashMap,
         sync::{
@@ -457,6 +460,216 @@ mod tests {
         assert_eq!(transport.exchanges.load(Ordering::SeqCst), 0);
         assert_eq!(transport.refreshes.load(Ordering::SeqCst), 0);
         assert_eq!(transport.identities.load(Ordering::SeqCst), 0);
+    }
+
+    struct ProfileStore(AuthProfile, Store);
+    impl CredentialStore for ProfileStore {
+        fn profile(&self) -> AuthProfile {
+            self.0
+        }
+        fn lock(&self, connection: &str) -> Result<Box<dyn CredentialGuard + '_>> {
+            self.1.lock(connection)
+        }
+        fn load(&self, connection: &str) -> Result<Option<StoredConnection>> {
+            self.1.load(connection)
+        }
+        fn save(&self, connection: &str, record: &StoredConnection) -> Result<()> {
+            self.1.save(connection, record)
+        }
+    }
+    struct ProfileFlow(AuthProfile);
+    impl AuthorizationFlow for ProfileFlow {
+        fn profile(&self) -> AuthProfile {
+            self.0
+        }
+        fn authorize(&self, client: &ClientConfig) -> Result<AuthorizationGrant> {
+            Flow::default().authorize(client)
+        }
+    }
+
+    #[test]
+    fn calendar_refresh_with_omitted_scopes_returns_verified_bound_token() {
+        for rotation in [None, Some("rotated-refresh-secret")] {
+            let profile = AuthProfile::CalendarEvents;
+            let store = ProfileStore(profile, connected());
+            let calendar_scopes: Vec<String> =
+                profile.scopes().iter().map(|s| (*s).into()).collect();
+            store
+                .1
+                .records
+                .lock()
+                .unwrap()
+                .get_mut("work")
+                .unwrap()
+                .grant
+                .as_mut()
+                .unwrap()
+                .scopes = calendar_scopes.clone();
+            let transport = Transport::default();
+            let mut response = tokens(rotation);
+            response.scopes = None;
+            *transport.refresh.lock().unwrap() = Some(Ok(response));
+
+            let attempt = Authenticator::new(&store, &transport).access_token_attempt("work");
+            let expected_generation = if rotation.is_some() { 8 } else { 7 };
+            assert_eq!(attempt.generation, Some(expected_generation));
+            let bound = attempt.outcome.unwrap();
+            assert_eq!(bound.token.expose(), ACCESS);
+            assert_eq!(bound.identity, GoogleIdentity::new(SUBJECT).unwrap());
+            let record = store.1.records.lock().unwrap()["work"].clone();
+            assert_eq!(record.identity, bound.identity);
+            assert_eq!(record.generation, expected_generation);
+            let grant = record.grant.unwrap();
+            assert_eq!(grant.scopes, calendar_scopes);
+            assert_eq!(grant.refresh_token.expose(), rotation.unwrap_or(REFRESH));
+            assert_eq!(
+                store.1.saves.load(Ordering::SeqCst),
+                usize::from(rotation.is_some())
+            );
+            assert_eq!(transport.refreshes.load(Ordering::SeqCst), 1);
+            assert_eq!(transport.identities.load(Ordering::SeqCst), 1);
+            assert_eq!(transport.exchanges.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn profile_records_and_missing_login_scopes_fail_closed() {
+        for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+            let store = ProfileStore(profile, connected());
+            let transport = Transport::default();
+            let auth = Authenticator::new(&store, &transport);
+            // Deliberately inject a grant belonging to the other profile.
+            let other = if profile == AuthProfile::TasksReadonly {
+                AuthProfile::CalendarEvents
+            } else {
+                AuthProfile::TasksReadonly
+            };
+            store
+                .1
+                .records
+                .lock()
+                .unwrap()
+                .get_mut("work")
+                .unwrap()
+                .grant
+                .as_mut()
+                .unwrap()
+                .scopes = other.scopes().iter().map(|s| (*s).into()).collect();
+            assert_eq!(auth.status("work").unwrap_err(), AuthError::StorageCorrupt);
+            assert_eq!(auth.logout("work").unwrap_err(), AuthError::StorageCorrupt);
+            assert_eq!(
+                auth.access_token("work").unwrap_err(),
+                AuthError::StorageCorrupt
+            );
+            assert_eq!(
+                auth.login("work", &client(), &ProfileFlow(profile))
+                    .unwrap_err(),
+                AuthError::StorageCorrupt
+            );
+            no_network(&transport);
+            let mut response = tokens(Some(REFRESH));
+            response.scopes = None;
+            *transport.exchange.lock().unwrap() = Some(Ok(response));
+            assert!(matches!(
+                auth.login("missing", &client(), &ProfileFlow(profile)),
+                Err(AuthError::ScopeMismatch {
+                    response_missing: true,
+                    ..
+                })
+            ));
+            assert_eq!(transport.identities.load(Ordering::SeqCst), 0);
+            assert_eq!(store.1.saves.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn profiles_fail_closed_and_preserve_refresh_and_local_lifecycle_rules() {
+        for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+            let other = if profile == AuthProfile::TasksReadonly {
+                AuthProfile::CalendarEvents
+            } else {
+                AuthProfile::TasksReadonly
+            };
+            let store = ProfileStore(profile, Store::default());
+            let transport = Transport::default();
+            let auth = Authenticator::new(&store, &transport);
+            assert_eq!(
+                auth.login("personal", &client(), &ProfileFlow(other))
+                    .unwrap_err(),
+                AuthError::ProfileMismatch
+            );
+            assert_eq!(store.1.locks.load(Ordering::SeqCst), 0);
+            no_network(&transport);
+            let exact: Vec<String> = profile.scopes().iter().map(|s| (*s).into()).collect();
+            let cross: Vec<String> = other.scopes().iter().map(|s| (*s).into()).collect();
+            let invalid = [
+                cross.clone(),
+                vec![exact[0].clone(), cross[0].clone(), "openid".into()],
+                [exact.clone(), vec!["canary-unknown-scope-secret".into()]].concat(),
+                vec![exact[0].clone(), exact[0].clone()],
+                [exact.clone(), vec!["openid".into()]].concat(),
+                vec![],
+            ];
+            for scopes in &invalid {
+                let mut response = tokens(Some(REFRESH));
+                response.scopes = Some(scopes.clone());
+                *transport.exchange.lock().unwrap() = Some(Ok(response));
+                let error = auth
+                    .login("personal", &client(), &ProfileFlow(profile))
+                    .unwrap_err();
+                assert!(matches!(error, AuthError::ScopeMismatch { .. }));
+                assert!(!format!("{error}{error:?}").contains("canary-unknown-scope-secret"));
+                assert!(store.1.records.lock().unwrap().is_empty());
+            }
+            let mut response = tokens(Some(REFRESH));
+            response.scopes = Some(exact.clone());
+            *transport.exchange.lock().unwrap() = Some(Ok(response));
+            let before = auth
+                .login("personal", &client(), &ProfileFlow(profile))
+                .unwrap();
+            assert_eq!(before.scopes, exact);
+            let identities = transport.identities.load(Ordering::SeqCst);
+            for scopes in invalid {
+                let mut response = tokens(Some("rotated-refresh-secret"));
+                response.scopes = Some(scopes);
+                *transport.refresh.lock().unwrap() = Some(Ok(response));
+                *transport.valid_refresh.lock().unwrap() = secret(REFRESH);
+                assert!(matches!(
+                    auth.access_token("personal"),
+                    Err(AuthError::ScopeMismatch { .. })
+                ));
+                assert_eq!(store.1.records.lock().unwrap()["personal"].generation, 1);
+                assert_eq!(transport.identities.load(Ordering::SeqCst), identities);
+            }
+            // A missing refresh scope inherits the validated grant. Rotation is
+            // durable even when the subsequent identity request fails.
+            *transport.valid_refresh.lock().unwrap() = secret(REFRESH);
+            let mut response = tokens(Some("rotated-refresh-secret"));
+            response.scopes = None;
+            *transport.refresh.lock().unwrap() = Some(Ok(response));
+            *transport.identity.lock().unwrap() = Err(AuthError::Transport);
+            let attempt = auth.access_token_attempt("personal");
+            assert_eq!(attempt.generation, Some(2));
+            assert_eq!(attempt.outcome.unwrap_err(), AuthError::Transport);
+            let exchanges = transport.exchanges.load(Ordering::SeqCst);
+            let refreshes = transport.refreshes.load(Ordering::SeqCst);
+            assert!(auth.status("personal").unwrap().credential_stored);
+            let after = auth.logout("personal").unwrap();
+            assert!(!after.credential_stored);
+            assert_eq!(before.account_namespace, after.account_namespace);
+            assert_eq!(store.1.records.lock().unwrap()["personal"].generation, 3);
+            assert_eq!(transport.exchanges.load(Ordering::SeqCst), exchanges);
+            assert_eq!(transport.refreshes.load(Ordering::SeqCst), refreshes);
+            *transport.identity.lock().unwrap() = Ok(GoogleIdentity::new("other-account").unwrap());
+            let mut response = tokens(Some(REFRESH));
+            response.scopes = Some(exact);
+            *transport.exchange.lock().unwrap() = Some(Ok(response));
+            assert_eq!(
+                auth.login("personal", &client(), &ProfileFlow(profile))
+                    .unwrap_err(),
+                AuthError::IdentityMismatch
+            );
+        }
     }
 
     #[test]

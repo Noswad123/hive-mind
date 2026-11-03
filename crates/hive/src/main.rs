@@ -25,7 +25,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Credential-free Calendar previews; no publication or Google access.
+    /// Local Calendar planning and separate OAuth management; no event publication.
     Calendar {
         #[command(subcommand)]
         command: calendar::CalendarCommand,

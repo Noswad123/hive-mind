@@ -1,4 +1,8 @@
-# Google Tasks Desktop sign-in
+# Google Desktop sign-in
+
+The live capture lane below remains Tasks-readonly. A separate, locally tested
+[Calendar auth profile](#separate-calendar-authorization-local-only) is available in
+the development build; it has not been live-authorized or connected to publication.
 
 ## Overview
 
@@ -267,6 +271,58 @@ delivery deferral. No Google/source completion or archival was performed. Calend
 completion writeback, lifelog, and PWA migration remain pending. No additional tests
 ran during activation; this docs-only update changes no source code and adds or
 reruns no tests. The 270-test record above is unchanged.
+
+## Separate Calendar authorization (local only)
+
+`hive calendar auth login/status/logout` explicitly selects the Calendar Events
+profile. It requests exactly `https://www.googleapis.com/auth/calendar.events`
+and `openid`, not Tasks, full Calendar administration, email, or profile scopes.
+The events scope permits reading and writing events across accessible calendars;
+OAuth itself does **not** restrict access to one pilot calendar. A future publisher
+must independently bind the selected calendar and verified Google account.
+
+Calendar grants use native Keychain service `hive/google-calendar/v1` and the
+OS-user lock directory `Library/Application Support/Hive/google-calendar-auth`.
+Tasks retains `hive/google-captures/v1`, `google-auth`, and the existing wire format
+and defaults. Even identical aliases select separate local records. The flow,
+provider and storage codec enforce the selected profile's exact scope set; mixed,
+extra, duplicate and wrong-profile scopes fail closed. Account tombstones and
+refresh-token rotation safeguards apply to both profiles.
+
+Separate local records do not establish independent Google-side consent,
+refresh-token or revocation lifecycles when sharing a client/project/account.
+For the pilot, prefer a dedicated Calendar Desktop OAuth client in a separate
+Google Cloud project to avoid sharing the working capture application's consent
+configuration. Do not revoke or broaden the existing Tasks grant as a workaround.
+Enable the Google Calendar API and configure the audience/test user for that
+project. Download the Desktop client JSON to a private location outside version
+control; share only its absolute path, never its contents or tokens. Calendar
+scopes also fall outside the basic-identity exception to external Testing's
+conditional seven-day refresh-token expiration.
+
+Only after explicit authorization to start browser consent and persist a separate
+local grant, run the development build (the installed capture worker binary need
+not be replaced):
+
+```sh
+./target/debug/hive calendar auth login \
+  --connection calendar-personal --client-json '/absolute/private/path/calendar-desktop.json'
+./target/debug/hive calendar auth status --connection calendar-personal
+```
+
+Login opens browser consent and, on success, stores an account-bound grant in the
+native, nonsynchronizing macOS Keychain. Status is local-only, not proof that
+Google still accepts the grant or that a particular calendar is writable. Logout
+clears the local grant but retains its account tombstone; it does not revoke the
+Google grant. No fallback to the Tasks connection or environment credentials is
+provided by these commands.
+
+This slice adds no live calendar-access probe, event publication, hosted credential
+storage or runnable hosted worker. The macOS Keychain is not a hosted Linux secret
+backend. Browser login, credential installation/export, hosted secrets, cost
+controls, commits/pushes and hosted runs remain separate activation decisions.
+Validation uses fake credentials and temporary local fixtures only; no live
+Calendar authorization or native Keychain I/O has been exercised for this profile.
 
 ## Related files
 

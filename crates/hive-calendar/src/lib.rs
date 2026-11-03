@@ -173,6 +173,7 @@ pub enum StateOperation {
     Reack,
     Prepare,
     MarkUncertain,
+    Acknowledge,
 }
 
 impl From<CandidateOperation> for StateOperation {
@@ -243,7 +244,14 @@ pub(crate) struct PreparedLedgerChange {
     pub path: String,
     pub expected_blob_id: Option<String>,
     pub candidate_ledger: Vec<u8>,
-    pub provider_operation: Option<ProviderOperationProof>,
+    pub proof: LedgerChangeProof,
+}
+
+/// Distinct in-process authority for source changes, frozen intents, and terminal ACKs.
+pub(crate) enum LedgerChangeProof {
+    Source,
+    Intent(ProviderOperationProof),
+    Acknowledgement(calendar_transport::ack::SealedAckProof),
 }
 
 pub(crate) struct ProviderOperationProof {

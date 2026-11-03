@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use hive_capture::{google::GoogleTasksClient, store::deterministic_capture_id};
 use hive_google_auth::{
-    AuthError, AuthorizationFlow, BoundAccessToken, ClientConfig, ConnectionStatus,
+    AuthError, AuthProfile, AuthorizationFlow, BoundAccessToken, ClientConfig, ConnectionStatus,
     CredentialStore, OAuthTransport, google::GoogleOAuth, loopback::LoopbackFlow,
     provider::Authenticator, storage::MacKeychainStore, validate_connection,
 };
@@ -295,10 +295,14 @@ impl PreparedCommand {
 }
 
 pub fn auth_command(command: CaptureAuthCommand) -> Result<()> {
+    auth_command_for(command, AuthProfile::TasksReadonly)
+}
+
+pub(crate) fn auth_command_for(command: CaptureAuthCommand, profile: AuthProfile) -> Result<()> {
     let prepared = PreparedCommand::new(command)?;
-    let store = MacKeychainStore::new()?;
+    let store = MacKeychainStore::for_profile(profile)?;
     let transport = GoogleOAuth::new()?;
-    let flow = LoopbackFlow::new();
+    let flow = LoopbackFlow::for_profile(profile);
     let status = prepared.execute(&store, &transport, &flow)?;
     let json = serde_json::to_string_pretty(&status)
         .map_err(|_| anyhow::anyhow!("could not encode Google connection status"))?;
@@ -401,6 +405,7 @@ mod tests {
 
     struct Transport<'a> {
         store: &'a Store,
+        profile: AuthProfile,
         exchanges: AtomicUsize,
         refreshes: AtomicUsize,
         identities: AtomicUsize,
@@ -413,6 +418,7 @@ mod tests {
         fn new(store: &'a Store) -> Self {
             Self {
                 store,
+                profile: AuthProfile::TasksReadonly,
                 exchanges: AtomicUsize::new(0),
                 refreshes: AtomicUsize::new(0),
                 identities: AtomicUsize::new(0),
@@ -428,7 +434,7 @@ mod tests {
                 access_token: secret(ACCESS),
                 refresh_token: Some(secret(REFRESH)),
                 expires_in: 3600,
-                scopes: Some(REQUIRED_SCOPES.iter().map(|s| (*s).into()).collect()),
+                scopes: Some(self.profile.scopes().iter().map(|s| (*s).into()).collect()),
             }
         }
     }
@@ -505,6 +511,112 @@ mod tests {
             connection: "work".into(),
             client_json: file.path().into(),
         }
+    }
+
+    #[test]
+    fn calendar_command_plumbing_uses_separate_profile_and_local_status_logout() {
+        struct CalendarStore(Store);
+        impl CredentialStore for CalendarStore {
+            fn profile(&self) -> AuthProfile {
+                AuthProfile::CalendarEvents
+            }
+            fn lock(
+                &self,
+                connection: &str,
+            ) -> hive_google_auth::Result<Box<dyn CredentialGuard + '_>> {
+                self.0.lock(connection)
+            }
+            fn load(&self, connection: &str) -> hive_google_auth::Result<Option<StoredConnection>> {
+                self.0.load(connection)
+            }
+            fn save(
+                &self,
+                connection: &str,
+                record: &StoredConnection,
+            ) -> hive_google_auth::Result<()> {
+                self.0.save(connection, record)
+            }
+        }
+        struct CalendarFlow<'a>(&'a Store);
+        impl AuthorizationFlow for CalendarFlow<'_> {
+            fn profile(&self) -> AuthProfile {
+                AuthProfile::CalendarEvents
+            }
+            fn authorize(
+                &self,
+                client: &ClientConfig,
+            ) -> hive_google_auth::Result<AuthorizationGrant> {
+                Flow(self.0).authorize(client)
+            }
+        }
+        let file = client_file();
+        let tasks = Store::default();
+        let tasks_transport = Transport::new(&tasks);
+        execute_with(login(&file), &tasks, &tasks_transport, &Flow(&tasks)).unwrap();
+        let tasks_before = format!("{:?}", tasks.record.lock().unwrap());
+        let calendar = CalendarStore(Store::default());
+        let transport = Transport {
+            profile: AuthProfile::CalendarEvents,
+            ..Transport::new(&calendar.0)
+        };
+        let status = execute_with(
+            login(&file),
+            &calendar,
+            &transport,
+            &CalendarFlow(&calendar.0),
+        )
+        .unwrap();
+        assert_eq!(status.scopes, AuthProfile::CalendarEvents.scopes());
+        let local = Transport::new(&calendar.0);
+        let before = execute_with(
+            CaptureAuthCommand::Status {
+                connection: "work".into(),
+            },
+            &calendar,
+            &local,
+            &CalendarFlow(&calendar.0),
+        )
+        .unwrap();
+        let after = execute_with(
+            CaptureAuthCommand::Logout {
+                connection: "work".into(),
+            },
+            &calendar,
+            &local,
+            &CalendarFlow(&calendar.0),
+        )
+        .unwrap();
+        assert!(before.credential_stored);
+        assert!(!after.credential_stored);
+        assert_eq!(before.account_namespace, after.account_namespace);
+        assert_eq!(
+            calendar
+                .0
+                .record
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .generation,
+            2
+        );
+        assert_eq!(local.exchanges.load(SeqCst), 0);
+        assert_eq!(local.refreshes.load(SeqCst), 0);
+        assert_eq!(local.identities.load(SeqCst), 0);
+        assert_eq!(format!("{:?}", tasks.record.lock().unwrap()), tasks_before);
+        assert_eq!(
+            tasks
+                .record
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .grant
+                .as_ref()
+                .unwrap()
+                .scopes,
+            REQUIRED_SCOPES
+        );
     }
     fn args(connection: Option<&str>, environment: Option<&str>) -> GoogleCredentialArgs {
         GoogleCredentialArgs {
