@@ -2,6 +2,7 @@
 //! Google retains phone captures while the desktop is offline. This crate stages
 //! observations durably and delegates canonical Markdown writes exclusively to mw.
 pub mod google;
+pub mod handoff;
 pub mod mindweaver;
 pub mod store;
 

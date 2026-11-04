@@ -26,7 +26,101 @@ Hive Mind should let a user:
 The later desktop UX may be a MindWeaver integration, but the sync protocol,
 server, and mobile/web companion should remain owned by Hive.
 
+## Current priority / accepted next slice: same-task Google Tasks due writeback
+
+**Accepted 2026-11-03:** canonical Markdown edit → commit AND PUSH to private
+NOTES repository `main` → GitHub-hosted workflow reads that exact pushed commit →
+due-only update of the **same existing Google Task**, not a Calendar event.
+Calendar is deferred; no outbound workflow, write auth, or Tasks writes are active.
+Live inbound capture remains Google-read-only and retains its queue and receipts.
+
+The credential/provider-free local milestone is implemented in **built-debug, not
+installed** `./target/debug/hive tasks handoff` and `tasks due-plan`: portable
+receipt-backed selected capture handoff plus exact committed-source first-due
+planner. The provider-neutral
+[source-reader facade](../crates/hive-calendar/src/task_snapshot.rs) shares the
+committed snapshot machinery, not a mutable working tree or Calendar publication.
+Hosted runners cannot
+read desktop queue mappings: export a reviewed selected source-repo/account/list/
+provider-task/stable-capture binding, receipt provenance/digest, and explicitly
+accepted **current** baseline, never mislabeled original baseline. Do not sync
+SQLite, reverse the stable marker, or title-match identities.
+
+Operator-supplied remote evidence is an assertion, not fresh authenticated GET or
+write authority. Plan only `set_first_due`, `already_satisfied`, or `blocked`, with
+`publicationReady`, `remoteVerified`, `pushVerified`, `conditionalWriteSafe`, and
+`hiveWriteProven` false. Conflicting due, meaningful remote
+changes, ambiguous identity, and unsupported state block. Equal due is not proof
+Hive wrote it. No create/delete/reschedule/due-clear/completion in the pilot.
+
+**Local TasksWrite auth + exact READ code/review milestone complete (2026-11-04),
+not mutation or activation.** Built-debug, not installed `tasks auth
+login/status/logout` and `tasks observe` use the separate exact `tasks` + `openid`
+profile, service `hive/google-tasks-write/v1` and `google-tasks-write-auth` locks.
+Readonly `personal` and Calendar profiles remain untouched. Local isolation does not
+isolate Google-side grants; prefer a separate Desktop client to reduce consent
+coupling. The scope is broad, not single-task restricted. MacKeychain is local only.
+
+Observe preflights the handoff before native setup, refreshes one saved grant with
+fresh UserInfo, matches the handoff namespace, then uses the same bearer for exact
+GET. No environment bearer/provider/list/task overrides, redirects/retries/list
+fallback, task mutation or queue/note/Git changes. The 64 KiB-bounded unsigned live
+wrapper records digest/time/exact tuple/nested observation; collection provenance
+is not portable authentication or dispatch rights. Offline due-plan rejects wrapper
+and provenance fields; explicit nested extraction remains operator asserted with
+`remoteVerified: false`. Publication/push/conditional-write/Hive-write flags stay false.
+
+**Reviewed fake-only executor milestone complete (2026-11-04).** Built-debug
+`tasks fake` persists Prepared/Attempting under local locks and exact-ref CAS before
+private move-only dispatch; only the synthetic target's due can change. Fresh
+committed source uses the shared `hive_tasks::policy`, never an executable JSON plan.
+World mutation and outcome commits are separate; frozen recovery never PATCHes and
+matching desired state has UNKNOWN causality. This is process-crash-only local
+proof, not Google ACK, host-loss durability, distributed fencing or portable hosted
+state. All production/readiness/proof flags remain false. See
+[fixture, usage, guarantees and state machine](tasks-first-due-fake-executor.md).
+
+Priority checklist:
+
+- [x] Portable selected handoff and committed-source advisory first-due planner.
+- [x] Separate local TasksWrite auth and handoff-bound authenticated exact READ;
+      fake lifecycle/loopback/async dispatch regression coverage, not live activation.
+- [x] Reviewed local fake-only intent/dispatch/recovery and synthetic revision CAS;
+      no production dispatch trait, HTTP Google PATCH or live constructor.
+- [ ] **Next:** separately authorize disposable-resource live validation that actual
+      Tasks conditional PATCH rejects stale preconditions rather than ignoring them;
+      neither fake revision checks nor Calendar etags are provider proof.
+- [ ] Hosted secure storage/rotation/serialization and failed-save recovery.
+- [ ] Live exact-task validation and conditional due-only PATCH/conflict semantics.
+- [ ] Scoped production adapter, durable intent/ACK coordination, dispatch authority,
+      uncertain-outcome recovery and inbound review integration.
+- [ ] Serialized immutable pushed-main workflow/freshness, cost hard stop and later Linux validation.
+- [ ] Separate approvals for consent, provider operations, state/secrets/workflow deployment.
+
+Remaining gates include hosted secret/refresh-rotation design; live exact-task
+and conditional PATCH verification; durable intent,
+uncertain-outcome ACK/recovery; serialized trusted-main workflow with immutable SHA
+and freshness checks; included-allowance hard stop; and Linux validation before
+deployment (deferred now). A local commit is not push proof and saved dirty notes
+are absent from the committed snapshot. See the
+[writeback design and staged plan](google-tasks-writeback.md) for interfaces,
+implemented examples, privacy, and inbound `provider_changed` interaction. Source:
+[CLI/planner](../crates/hive/src/tasks.rs),
+[handoff contract](../crates/hive-capture/src/handoff.rs), and
+[integration tests](../crates/hive/tests/tasks.rs). See
+[current targeted validation](release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04),
+independently run in implementation, not rerun for this documentation update. No
+full workspace rerun/green claim this milestone; prior unresolved Calendar loopback
+history remains intact. No new consent, live Google operations, ACK, hosted workflow,
+commit/push/install or real-state changes.
+
 ## Accepted next slice: hosted Calendar publication after push
+
+> **Historical accepted target, superseded 2026-11-03; Calendar deferred.** The
+> original heading remains for existing links. This section and its Calendar
+> contracts/checkpoints preserve work and evidence, not current priority or an
+> instruction to activate Calendar. Code is not claimed removed. The accepted
+> next slice is now same-task Google Tasks due writeback above.
 
 Decision accepted on 2026-11-01; **design selected, publisher not implemented or
 deployed**. Use a GitHub-hosted Linux workflow after a notes push, targeting zero

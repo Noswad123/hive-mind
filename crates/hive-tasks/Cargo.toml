@@ -1,0 +1,21 @@
+[package]
+name = "hive-tasks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hive-calendar = { path = "../hive-calendar" }
+hive-capture = { path = "../hive-capture" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+regex.workspace = true
+time.workspace = true
+libc.workspace = true
+getrandom.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+hive-core = { path = "../hive-core" }

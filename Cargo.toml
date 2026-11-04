@@ -3,6 +3,7 @@ members = [
   "crates/hive",
   "crates/hive-core",
   "crates/hive-capture",
+  "crates/hive-tasks",
   "crates/hive-google-auth",
   "crates/hive-background",
   "crates/hive-calendar",

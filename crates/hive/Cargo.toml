@@ -10,11 +10,14 @@ anyhow.workspace = true
 clap.workspace = true
 hive-core = { path = "../hive-core" }
 hive-capture = { path = "../hive-capture" }
+hive-tasks = { path = "../hive-tasks" }
 hive-google-auth = { path = "../hive-google-auth" }
 hive-background = { path = "../hive-background" }
 hive-calendar = { path = "../hive-calendar" }
 libc.workspace = true
 sha2.workspace = true
+regex.workspace = true
+time.workspace = true
 hive-desktop = { path = "../hive-desktop" }
 hive-server = { path = "../hive-server" }
 serde.workspace = true

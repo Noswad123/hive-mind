@@ -21,6 +21,7 @@ mod planner;
 mod projection;
 mod source;
 mod state_git;
+pub mod task_snapshot;
 
 pub use candidates::{CandidateBase, CandidateOperation, LedgerCandidate};
 pub use ledger::{
@@ -273,7 +274,7 @@ pub(crate) struct SourceBlob {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SourceTask {
+pub struct SourceTask {
     pub id: String,
     pub stable_id: Option<String>,
     pub identity_kind: String,
@@ -290,7 +291,7 @@ pub(crate) struct SourceTask {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub(crate) struct TaskMetadata {
+pub struct TaskMetadata {
     pub due: String,
     pub raw: String,
     pub start: String,

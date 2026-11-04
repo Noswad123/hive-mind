@@ -1,6 +1,6 @@
 # Hive Mind Status and Roadmap
 
-Last updated: 2026-11-02
+Last updated: 2026-11-04
 
 Hive Mind is the optional sync/API/PWA companion for MindWeaver. MindWeaver keeps
 canonical local Markdown workflows; Hive exchanges operations between devices and
@@ -14,6 +14,75 @@ offers mobile/web companion surfaces.
   conflict transport, and cloud/PWA/mobile integration.
 - `hive-pwa` owns browser/mobile capture, lightweight editing, local IndexedDB
   state, manual sync, and sync health/conflict visibility.
+
+## Current priority — same-task Google Tasks first-due writeback
+
+**Accepted behavior:** edit canonical Markdown → commit AND PUSH to private NOTES
+repository `main` → GitHub-hosted workflow reads the exact pushed commit → update
+the SAME existing Google Task (pilot due only). Not a Calendar event. Calendar is
+deferred; its historical milestones and checklist below are retained, not removed
+code or current activation instructions. Inbound capture stays live and
+Google-read-only. No outbound workflow/auth/Tasks writes are activated.
+
+Current checklist (local code/review milestone done; outbound activation not done):
+
+- [x] Record same-task due-only target and defer Calendar.
+- [x] Implement credential/provider-free portable receipt-backed selected capture
+      handoff; review repo/account/list/provider-task/stable-capture binding and
+      receipt provenance/digest. Accept the current baseline explicitly, never
+      mislabel it original. Desktop SQLite is not synced to hosted runners.
+- [x] Implement source-reader facade sharing committed snapshot machinery and
+      first-due planner over full SHA plus explicit handoff/operator observation.
+      Saved dirty notes are invisible; local commit alone is not push proof.
+      Advisory outcomes: `set_first_due` / `already_satisfied` / `blocked`;
+      `publicationReady`, `remoteVerified`, `pushVerified`, `conditionalWriteSafe`,
+      and `hiveWriteProven` remain false.
+- [x] Reconcile CLI/docs with reviewed implementation: **built-debug, not installed**
+      `./target/debug/hive tasks handoff` / `tasks due-plan`, JSON stdout only.
+      Record supplied implementation validation, not tests rerun for docs.
+- [x] Implement/review separate local TasksWrite (`https://www.googleapis.com/auth/tasks`
+      + `openid`) auth login/status/logout, isolated Keychain service/locks, without
+      changing `personal` readonly or Calendar. Built-debug, not installed; no consent
+      or native credential operation run. Local isolation is not Google grant isolation.
+- [x] Implement handoff-bound exact authenticated READ: input preflight before native
+      setup, one refresh/fresh UserInfo, handoff namespace match, same-token exact GET.
+      Unsigned live wrapper is collection provenance only; offline due-plan rejects
+      wrapper/trust fields and explicit nested extraction stays operator asserted.
+      No mutation, queue/note/Git changes, ACK, or activation.
+- [x] Complete reviewed fake-only durable executor (`tasks fake`), sharing
+      `hive_tasks::policy` with due-plan; fresh committed source, Prepared/Attempting
+      CAS before private dispatch, revision-conditional due-only fake patch and
+      frozen recovery that never PATCHes. Local process-crash proof only, not Google
+      ACK, hosted coordination or production readiness. See
+      [usage, fixture and state machine](docs/tasks-first-due-fake-executor.md).
+- [ ] **Next gate:** separately authorize a disposable-resource live Google Tasks
+      conditional PATCH test proving stale preconditions are rejected, not ignored.
+      Fake revisions and Calendar etags do not establish Tasks behavior.
+- [ ] Review hosted secrets/refresh-token rotation, serialization and failed-save
+      recovery; native MacKeychain is local only, not hosted Linux storage.
+- [ ] Verify live exact-task behavior and conditional due-only PATCH semantics;
+      block meaningful changes/conflicting due/unsupported state. Equal due is not
+      proof of Hive mutation. No title matching, create/delete/reschedule/clear/completion.
+- [ ] Deliver scoped production adapter and production durable intent/ACK coordination
+      and uncertain-outcome recovery (fake-only milestone above is not production);
+      retain inbound receipts/review, including future own-write `provider_changed`,
+      until explicit outbound ACK integration exists.
+- [ ] Deliver serialized trusted-main workflow with immutable pushed SHA/freshness,
+      durable state, included-allowance paid-overage hard stop, and Linux validation
+      before deployment. Linux validation remains deferred now.
+- [ ] Obtain separate activation approvals before real grants/secrets/state,
+      workflow deployment, or provider writes. No workflow is added in this slice.
+
+See [implemented local interfaces and activation boundaries](docs/google-tasks-writeback.md)
+and the [current fake-executor checkpoint](docs/release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04):
+final hive-tasks **21 passed**, independently confirmed; CLI Tasks **22 passed / 1
+ignored**, Tasks unit **5 passed**. Repeated runs are not additional distinct tests.
+The earlier auth/read **242 passed / 9 ignored** remains its own historical checkpoint. No latest
+full-workspace green claim: it was not rerun this milestone. The earlier intermediate
+486/14 serial pass and later unresolved/unconfirmed-cause Calendar loopback failures
+remain [historical evidence](docs/release.md#google-tasks-local-first-due-checkpoint-2026-11-03).
+No new consent, Google operations, commit/push/install/workflow or real-state changes;
+this documentation update runs no tests or shell/native calls.
 
 ## Implemented capabilities
 
@@ -121,7 +190,12 @@ state. Live computer-off catch-up and full pending-job dirty-buffer delivery def
 remain unverified; read-only dirty readiness is already proven. Calendar publication, export/completion writeback,
 lifelog, and PWA migration remain pending.
 
-### Accepted next slice: hosted Calendar publication
+### Historical accepted slice: hosted Calendar publication (deferred)
+
+> **Superseded target as of 2026-11-03.** The Calendar milestones, supplied test
+> evidence, and delivery gates below are historical/deferred, not current priority.
+> The accepted next slice is same-task Google Tasks first-due writeback above.
+> Existing Calendar code is retained; no Calendar activation is authorized.
 
 The user selected GitHub-hosted Linux Actions after notes pushes, with a small
 Git-backed publication ledger on a separate state branch and no paid infrastructure
@@ -473,7 +547,7 @@ notes, provider, credentials, services, installs, worker, CI, secrets or billing
 changed, and no paid service was provisioned. Linux remains explicitly DEFERRED,
 with no probes/VMs/targets. No tests/builds/network or uploads/offers in this docs pass.
 
-Delivery gates:
+Historical Calendar delivery gates (deferred, not the current checklist):
 
 - [x] Confirm notes repository host, visibility, default branch, and Actions availability.
 - [x] Record committed-source, ledger, recovery, credential, and cost boundaries.

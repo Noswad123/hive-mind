@@ -48,6 +48,36 @@ attempt 1 with no duplicates. Editor readiness is `ready: true`, `noEditor: fals
 live dirty-buffer readiness deferral and restored clean readiness are also verified.
 See the activation evidence below for the exact boundary and controls.
 
+### Writeback boundary — accepted 2026-11-03, not activated
+
+The next outbound slice is **canonical Markdown edit → commit AND PUSH to private
+NOTES `main` → hosted workflow reads the exact pushed commit → due-only PATCH of
+the same existing Google Task**. Calendar is deferred. This does not change the
+live inbound GET-only lane or broaden its `personal` readonly grant; no outbound
+workflow, write authorization, or Tasks writes are activated.
+
+The implemented **built-debug, not installed** `./target/debug/hive tasks handoff`
+reads only the selected capture through read-only queue inspection and emits one
+portable receipt-backed
+binding (source repository, account/list/provider task, stable capture identity,
+receipt provenance/digest, explicitly accepted current baseline). The stable marker
+is irreversible and is not a provider-ID lookup; never title-match, reset queues,
+or sync SQLite to make mappings available to hosted runners. Current baseline
+acceptance must not be represented as original capture evidence. Supplied remote
+observations remain operator assertions, not authenticated GET or write authority.
+Export requires explicit `--accept-current-baseline`, an undated delivered unchanged
+capture, a valid receipt, and a verified queue account binding. The companion
+`./target/debug/hive tasks due-plan` is advisory over an exact committed snapshot.
+Both emit JSON stdout without writing output files, changing the queue, or calling
+Google. See the [local checkpoint](release.md#google-tasks-local-first-due-checkpoint-2026-11-03).
+
+Future own due writes may trigger sticky inbound `provider_changed`, just like
+other provider changes. Preserve the original receipt, frozen intent, and review
+state until explicit outbound acknowledgement integration is implemented; do not
+silently suppress review or recapture. The existing `calendar_pending` state name
+and dated-capture deferral remain implementation facts, not Calendar activation.
+See [writeback design and activation gates](google-tasks-writeback.md).
+
 ## API / Interfaces
 
 Successful command output is JSON with `schemaVersion: "1"`; operational errors
@@ -480,6 +510,7 @@ the legacy server/desktop crates.
 ## Related files
 
 - [Google OAuth setup and security contract](google-auth.md)
+- [Accepted same-task due writeback design (not activated)](google-tasks-writeback.md)
 - [CLI arguments and dispatch](../crates/hive/src/main.rs)
 - [Background CLI and supervised cycles](../crates/hive/src/captures_background.rs)
 - [Background config, state, editor coordination, and launchd](../crates/hive-background/src/lib.rs)

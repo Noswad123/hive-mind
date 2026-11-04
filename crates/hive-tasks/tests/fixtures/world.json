@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1",
+  "worldId": "synthetic-world",
+  "sourceRepoId": "synthetic-repo",
+  "accountKey": "google-sub-v1:0000000000000000000000000000000000000000000000000000000000000000",
+  "listId": "synthetic-list",
+  "task": {
+    "id": "synthetic-task",
+    "title": "Synthetic task, not live data",
+    "status": "needsAction"
+  }
+}

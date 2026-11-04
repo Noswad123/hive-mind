@@ -187,6 +187,66 @@ fn validate_schema(conn: &Connection) -> Result<()> {
 }
 
 impl CaptureStore {
+    /// Inspect one record and its verified namespace without opening a mutable queue.
+    pub fn inspect_selected(
+        path: impl AsRef<Path>,
+        capture_id: &str,
+    ) -> Result<(CaptureJob, hive_core::GoogleIdentity)> {
+        let (path, exists) = checked_path(path.as_ref())?;
+        ensure!(exists, "capture database does not exist");
+        validate_header(&path)?;
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        validate_schema(&conn)?;
+        conn.execute_batch("BEGIN DEFERRED")?;
+        let size: i64 = conn
+            .query_row(
+                "SELECT length(CAST(job AS BLOB)) FROM jobs WHERE capture_id = ?1",
+                [capture_id],
+                |row| row.get(0),
+            )
+            .context("unknown capture ID")?;
+        ensure!(
+            size <= 2 * crate::handoff::MAX_JSON_BYTES as i64,
+            "selected capture size limit exceeded"
+        );
+        let job = load_job(&conn, capture_id)?.context("unknown capture ID")?;
+        let tuple: (String, String, String) = conn.query_row(
+            "SELECT account_key, list_id, provider_id FROM jobs WHERE capture_id = ?1",
+            [capture_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        ensure!(
+            tuple
+                == (
+                    job.account_key.clone(),
+                    job.list_id.clone(),
+                    job.provider_id.clone()
+                )
+                && job.capture_id == capture_id,
+            "stored capture mapping mismatch"
+        );
+        let identity: hive_core::GoogleIdentity = conn
+            .query_row(
+                "SELECT issuer, subject FROM identity_bindings WHERE namespace = ?1",
+                [&job.account_key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .context("verified identity binding required")
+            .and_then(|(issuer, subject)| {
+                Ok(serde_json::from_value(
+                    serde_json::json!({"issuer":issuer,"subject":subject}),
+                )?)
+            })?;
+        ensure!(
+            identity.namespace()? == job.account_key,
+            "identity namespace mismatch"
+        );
+        Ok((job, identity))
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_impl(path.as_ref(), true)
     }
@@ -575,7 +635,7 @@ fn initial_state(task: &GoogleTask) -> DeliveryState {
     }
 }
 
-fn unsupported_reason(task: &GoogleTask) -> Option<&'static str> {
+pub(crate) fn unsupported_reason(task: &GoogleTask) -> Option<&'static str> {
     if task.status != "needsAction" {
         return Some("unsupported Google task status");
     }

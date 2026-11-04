@@ -1,5 +1,192 @@
 # Hive Release and Packaging
 
+## Tasks first-due fake-executor checkpoint: 2026-11-04
+
+**New fake-only executor milestone complete after review; not production or
+activation.** Built-debug, not installed `./target/debug/hive tasks fake
+init/execute-first-due/recover/inspect` adds dedicated bare local state at fixed
+`refs/heads/hive-tasks-fake-state` plus a separate single-target synthetic world.
+The checked-in fixture has no real Google values. Shared policy moved from the CLI
+to `hive_tasks::policy`; dispatch freshly collects exact committed source, never
+executes JSON plans, and does not require that source to be pushed.
+
+Prepared → Attempting is durable exact-ref CAS under separate local locks before
+private move-only dispatch. Revision-conditional fake PATCH changes due only;
+world mutation and outcome persistence are separate. Frozen recovery has no
+source/parser dependency and never PATCHes: Prepared becomes NotDispatched;
+attempted/uncertain matching desired state becomes RecoveredSatisfied with UNKNOWN
+causality; unchanged/missing stays Uncertain; conflict becomes blocking
+ConflictNeedsReview. Repeated unchanged recovery adds no history commit, including
+at the history bound; legacy consecutive Uncertain histories can still terminate.
+No reset/retry-dispatch/resolve escape or later operation after satisfaction.
+
+All reports retain `executionMode: "fake-only"`, `provider: "durable-fake"`, and
+false `googleConditionalWriteValidated`, `productionReady`, `publicationReady`,
+`pushVerified`, `remoteVerified`, `hiveWriteProven`. Fake Applied is not a Google
+ACK and cannot be promoted into production evidence. Sanitized bounded Git plumbing
+uses old-ref CAS and explicit object/ref fsync; guarantees remain **process-crash
+recovery only**, not host/power loss or distributed fencing. Path-bound local state
+is not portable hosted coordination. Separate world locking explicitly unlocks
+shared/inherited descriptors.
+
+### Supplied final targeted validation
+
+Actually run during implementation/review, **not run by this docs update**:
+
+- Coordinator independently ran final default-parallel hive-tasks: **21 passed**;
+  reviewer independently confirmed **21 passed**. Implementer also ran three
+  successive default-parallel passes and one serial pass, each **21 passed**.
+  These repeat the same suite, not additional distinct tests.
+- Final CLI Tasks integration: **22 passed / 1 ignored**; Tasks unit: **5 passed**.
+  The real-MW integration remained ignored for this milestone, not rerun.
+- Earlier implementation regression checks: capture **68 passed / 2 ignored**,
+  auth **68 passed**, capture CLI **7 passed / 1 ignored**, auth CLI **6 passed**.
+  The coordinator did not rerun these for the final checkpoint.
+- Strict new-crate Clippy passed; CLI Clippy passed with existing
+  `too_many_arguments` / `needless_lifetimes` allowances. Formatting and diff checks
+  passed. No fully strict workspace Clippy claim.
+- Initial parallel new-crate failures were reproduced and fixed; lock coverage now
+  includes explicit release with shared/inherited descriptors. Final recovery
+  coverage also verifies idempotent bounded Uncertain history. The repeated
+  parallel passes above are the post-fix evidence,
+  not a claim of final flakiness or that initial failures never happened.
+- **Full workspace NOT rerun.** Prior unresolved Calendar loopback evidence and the
+  Nov 3 intermediate serial pass remain historical below, not latest green proof.
+
+No live auth/observe/Google requests, native credential operations, installed
+binaries, workflows, capture queue, notes, real user refs/state, commit/push or
+live activation were touched. Tests created actual Git refs/commits **only in
+temporary synthetic repositories**; this is not a claim of no Git writes anywhere.
+This documentation pass runs no tests, builds, shell commands or live operations.
+
+**NEXT gate:** separately authorize a disposable-resource live Google Tasks test
+proving stale conditional PATCH preconditions are rejected, not ignored. Fake
+revisions and Calendar etags do not prove Tasks behavior. Then deliver a scoped
+production adapter, durable intent/ACK coordination, hosted secrets/state and the
+notes-`main` push workflow, with existing cost/Linux/activation gates. No new
+workflow or live-write CLI now. Auth docs and prior Nov 3/Nov 4 checkpoints are
+unchanged. See [usage, fixture, state machine and limits](tasks-first-due-fake-executor.md)
+and [staged writeback gates](google-tasks-writeback.md#staged-activation-plan).
+
+## Google Tasks auth and exact-read checkpoint: 2026-11-04
+
+**Separate local TasksWrite auth + handoff-bound exact Google Task READ complete;
+NOT task mutation or activation.** Built-debug, not installed,
+`./target/debug/hive tasks auth login/status/logout` selects exactly
+`https://www.googleapis.com/auth/tasks` plus `openid`, with native local Keychain
+service `hive/google-tasks-write/v1` and `google-tasks-write-auth` lock namespace.
+Readonly `personal` and Calendar profiles remain untouched. Local storage/lock
+isolation is not Google-side grant isolation; the broad scope is not single-task
+restricted. Hosted Linux secure storage/rotation remain future work.
+
+`tasks observe --connection tasks-write-personal --handoff /ABS/private/reviewed-handoff.json`
+preflights input before native setup, refreshes one saved grant with fresh UserInfo,
+matches the handoff account namespace and uses the same bearer for exact GET. No
+environment bearer/provider/list/task overrides, redirects/retries/list fallback,
+queue/note/Git changes or task mutations. Resource/output limits are 64 KiB (encoded
+output strictly smaller). Its unsigned `google-task-live-observation` carries
+handoff digest, time, exact tuple and nested observation. Collection provenance
+`remoteReadVerifiedDuringCollection: true` is not portable authentication;
+`portableEvidenceAuthenticated`, `publicationReady`, `pushVerified`,
+`conditionalWriteSafe` and `hiveWriteProven` stay false. Offline due-plan rejects
+the wrapper/provenance fields; explicit nested extraction stays operator asserted,
+`remoteVerified: false`. Files/digests/time grant neither authenticity nor dispatch.
+
+### Independently run implementation validation
+
+Supplied results, actually executed independently during implementation; **not
+rerun by this docs-only update**:
+
+```text
+cargo test --locked --offline -p hive-google-auth -p hive-capture -p hive -- --test-threads=1
+```
+
+- Completed with all invoked suites passing: CLI unit **58 passed**; Tasks
+  integration **20 passed / 1 ignored**; capture library **68 passed / 2 ignored**;
+  auth library **68 passed**. Existing CLI Calendar/capture integration suites also
+  passed. Total across main harnesses: **242 passed / 9 ignored**; subprocess probes
+  are extra and are not double-counted. This is not a full-workspace run or a rerun
+  of ignored real-MW gates.
+- Coverage includes exact profile namespaces/scopes, fake auth lifecycle and
+  loopback tests, plus **8 new exact-GET tests**. Reviewer found no P1/P2 after
+  fixing Tokio dispatch to `spawn_blocking`: blocking clients are constructed,
+  used and dropped off runtime threads. The shared async regression uses real
+  blocking HTTP client constructors but fake credential/provider dependencies,
+  with **zero network requests** in that regression.
+- New tests use no live Keychain, browser, Google provider or user state. HTTP
+  transport testing is loopback-only, not live Google behavior or consent proof.
+- Formatting and diff checks passed. Focused strict auth/capture Clippy passed.
+  Hive CLI strict checking still requires the existing unrelated
+  `too_many_arguments` / `needless_lifetimes` allowances; no fully strict workspace
+  Clippy claim.
+- **Full workspace was NOT rerun this milestone.** Prior Calendar HTTP-loopback
+  failures and their unconfirmed cause remain unresolved evidence at the checkpoint
+  below; the earlier intermediate serial pass is not latest full-workspace proof.
+
+Login and observe examples are activation-sensitive, **not executed or instructions
+to run now**. Status/logout access local secure storage but do not call Google;
+logout retains account binding, does not revoke the Google grant and cannot retract
+an in-flight bearer. No new consent/Google operations, PATCH/ACK/hosted workflows,
+commit/push/install or real-state changes occurred. The eventual source-push-to-private-
+NOTES-`main` target is unchanged; Calendar remains deferred. Prior checkpoints below
+are preserved as historical records, not rewritten to this milestone's status.
+
+See [contracts, CLI examples and remaining gates](google-tasks-writeback.md),
+[auth profiles](google-auth.md#separate-tasks-write-authorization-local-only),
+[CLI/dispatch](../crates/hive/src/tasks.rs),
+[observation collector](../crates/hive/src/tasks_observe.rs),
+[exact GET](../crates/hive-capture/src/google.rs), and
+[auth profile definitions](../crates/hive-google-auth/src/lib.rs).
+
+## Google Tasks local first-due checkpoint: 2026-11-03
+
+**Local code/review milestone done, not outbound activation.** Built-debug, not
+installed, `./target/debug/hive tasks handoff` exports one selected delivered
+unchanged capture with verified queue binding, receipt provenance/digest and
+explicitly accepted current undated baseline. `tasks due-plan` reads a full pinned
+commit through the shared committed-task facade plus explicit handoff and
+operator-asserted observation. Both emit JSON stdout, not output files. Advice is
+`set_first_due`, `already_satisfied`, or `blocked`; publication/remote/push
+verification, conditional-write safety and Hive-write proof always remain false.
+
+The accepted eventual target is a push to private NOTES `main` followed by hosted
+execution against that exact pushed commit, updating the SAME Google Task's first
+due only—not creating a Calendar event. Calendar work/evidence below is historical
+and deferred, not removed. See [interfaces and remaining gates](google-tasks-writeback.md).
+
+**Validation and remaining test issue:**
+
+- Latest Tasks integration: **17 passed, 1 ignored**; the ignored real-MW gate was
+  explicitly run separately and **1 passed**, using sibling `target/release/mw`
+  with an isolated TEMP committed repository. Both checks were independently
+  rerun after the final fixes. The real-MW gate produced due-only
+  `2026-11-10T00:00:00.000Z` advice with source/index unchanged, including coexistence
+  with unrelated inactive/archive history and rejection of duplicate identity.
+- An earlier intermediate full **serial** workspace run passed **486 / 14 ignored**.
+  **Latest full-workspace validation is not green:** later serial attempts each
+  reached three Calendar HTTP-loopback failures before Cargo stopped, and a
+  transport-only rerun also failed. Failures included request-count mismatches and
+  `Unavailable` versus `Uncertain`/`Invalid` outcomes. Calendar transport, process,
+  and original source-reader files are unchanged; root cause remains unconfirmed,
+  with no pristine-baseline comparison. Do not treat the earlier pass as final
+  full-workspace proof. Other crates were checked separately by the implementer.
+- Strict capture/Calendar library Clippy passed. CLI Clippy passed only with
+  allowances for pre-existing `too_many_arguments` / `needless_lifetimes`; no
+  globally strict clean claim. Formatting and diff checks passed.
+
+No installed binaries, user notes/queues, credentials/providers, `.github`
+workflows, real user refs/commits/pushes or activation changed. The inbound worker
+and readonly grant remain live and untouched. Remaining gates include separate
+Tasks-write auth and hosted secret/rotation design, exact-task authenticated GET
+and conditional PATCH verification, durable intent/uncertain-outcome ACK/recovery,
+serialized immutable-SHA/freshness workflow, included-allowance hard stop, and Linux
+validation before deployment (deferred now). This documentation pass runs no tests.
+
+Implementation: [CLI/planner](../crates/hive/src/tasks.rs),
+[handoff](../crates/hive-capture/src/handoff.rs),
+[shared task facade](../crates/hive-calendar/src/task_snapshot.rs), and
+[integration tests](../crates/hive/tests/tasks.rs).
+
 ## Current release path
 
 The canonical binary name is `hive`. For now, releases are source-built Rust

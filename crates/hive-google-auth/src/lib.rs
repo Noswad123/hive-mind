@@ -10,6 +10,7 @@ use std::{fmt, path::Path};
 use zeroize::Zeroizing;
 
 pub const TASKS_SCOPE: &str = "https://www.googleapis.com/auth/tasks.readonly";
+pub const TASKS_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/tasks";
 pub const OPENID_SCOPE: &str = "openid";
 pub const REQUIRED_SCOPES: &[&str] = &[TASKS_SCOPE, OPENID_SCOPE];
 pub const CALENDAR_EVENTS_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
@@ -18,6 +19,7 @@ pub const CALENDAR_EVENTS_SCOPE: &str = "https://www.googleapis.com/auth/calenda
 pub enum AuthProfile {
     #[default]
     TasksReadonly,
+    TasksWrite,
     CalendarEvents,
 }
 
@@ -25,6 +27,7 @@ impl AuthProfile {
     pub fn scopes(self) -> &'static [&'static str] {
         match self {
             Self::TasksReadonly => REQUIRED_SCOPES,
+            Self::TasksWrite => &[TASKS_WRITE_SCOPE, OPENID_SCOPE],
             Self::CalendarEvents => &[CALENDAR_EVENTS_SCOPE, OPENID_SCOPE],
         }
     }
@@ -43,6 +46,7 @@ impl AuthProfile {
     pub(crate) fn service(self) -> &'static str {
         match self {
             Self::TasksReadonly => "hive/google-captures/v1",
+            Self::TasksWrite => "hive/google-tasks-write/v1",
             Self::CalendarEvents => "hive/google-calendar/v1",
         }
     }
@@ -50,6 +54,7 @@ impl AuthProfile {
     pub(crate) fn lock_namespace(self) -> &'static str {
         match self {
             Self::TasksReadonly => "google-auth",
+            Self::TasksWrite => "google-tasks-write-auth",
             Self::CalendarEvents => "google-calendar-auth",
         }
     }
@@ -85,10 +90,12 @@ pub enum AuthError {
     #[error("Google did not grant the required narrow scopes")]
     InvalidScopes,
     #[error(
-        "Google scope mismatch: tasks_readonly={tasks_readonly}, openid={openid}, userinfo_email={userinfo_email}, userinfo_profile={userinfo_profile}, unknown_count={unknown_count}, duplicates={duplicates}, response_missing={response_missing}"
+        "Google scope mismatch: tasks_readonly={tasks_readonly}, tasks_write={tasks_write}, calendar_events={calendar_events}, openid={openid}, userinfo_email={userinfo_email}, userinfo_profile={userinfo_profile}, unknown_count={unknown_count}, duplicates={duplicates}, response_missing={response_missing}"
     )]
     ScopeMismatch {
         tasks_readonly: bool,
+        tasks_write: bool,
+        calendar_events: bool,
         openid: bool,
         userinfo_email: bool,
         userinfo_profile: bool,
@@ -237,4 +244,58 @@ pub fn validate_connection(connection: &str) -> Result<()> {
         return Err(AuthError::InvalidConnection);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profiles_accept_only_their_exact_scope_set() {
+        assert_eq!(AuthProfile::default(), AuthProfile::TasksReadonly);
+        assert_eq!(REQUIRED_SCOPES, &[TASKS_SCOPE, OPENID_SCOPE]);
+        assert_eq!(
+            AuthProfile::TasksWrite.scopes(),
+            &[TASKS_WRITE_SCOPE, OPENID_SCOPE]
+        );
+        assert_eq!(
+            AuthProfile::TasksWrite.service(),
+            "hive/google-tasks-write/v1"
+        );
+        assert_eq!(
+            AuthProfile::TasksWrite.lock_namespace(),
+            "google-tasks-write-auth"
+        );
+        let profiles = [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ];
+        for profile in profiles {
+            let exact: Vec<String> = profile.scopes().iter().map(|s| (*s).into()).collect();
+            assert!(profile.accepts_scopes(&exact));
+            assert!(profile.accepts_scopes(&exact.iter().rev().cloned().collect::<Vec<_>>()));
+            for invalid in [
+                vec![],
+                vec![exact[0].clone()],
+                vec![OPENID_SCOPE.into()],
+                vec![exact[0].clone(), exact[0].clone()],
+                [exact.clone(), vec![OPENID_SCOPE.into()]].concat(),
+                [
+                    exact.clone(),
+                    vec!["https://www.googleapis.com/auth/calendar".into()],
+                ]
+                .concat(),
+            ] {
+                assert!(!profile.accepts_scopes(&invalid));
+            }
+            for other in profiles.into_iter().filter(|other| *other != profile) {
+                let wrong: Vec<String> = other.scopes().iter().map(|s| (*s).into()).collect();
+                assert!(!profile.accepts_scopes(&wrong));
+                assert!(!profile.accepts_scopes(&[exact.clone(), vec![wrong[0].clone()]].concat()));
+                assert_ne!(profile.service(), other.service());
+                assert_ne!(profile.lock_namespace(), other.lock_namespace());
+            }
+        }
+    }
 }

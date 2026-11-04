@@ -492,12 +492,15 @@ dependencies = [
  "hive-desktop",
  "hive-google-auth",
  "hive-server",
+ "hive-tasks",
  "libc",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "time",
  "tokio",
 ]
 
@@ -613,6 +616,24 @@ dependencies = [
  "time",
  "tokio",
  "tower-http",
+]
+
+[[package]]
+name = "hive-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.4.3",
+ "hive-calendar",
+ "hive-capture",
+ "hive-core",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
 ]
 
 [[package]]

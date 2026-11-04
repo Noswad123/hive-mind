@@ -1,6 +1,15 @@
 # Google Desktop sign-in
 
-The live capture lane below remains Tasks-readonly. A separate, locally tested
+**Current priority (2026-11-04): same-task Google Tasks first-due writeback after a
+push to private NOTES `main`, not Calendar publication.** The local handoff/planner
+milestone is implemented in **built-debug, not installed**
+`./target/debug/hive tasks handoff` / `tasks due-plan` and is
+credential/provider-free. Separate local **TasksWrite auth + handoff-bound exact
+READ is now implemented** as `tasks auth login/status/logout` and `tasks observe` in
+the built-debug, not installed binary. No new consent, live Google operation, task
+mutation, ACK, or hosted workflow was run or activated. The live `personal` capture
+grant remains Tasks-readonly, untouched.
+A separate, locally tested
 [Calendar auth profile](#separate-calendar-authorization-local-only) is available in
 the development build; it has not been live-authorized or connected to publication.
 
@@ -272,7 +281,105 @@ completion writeback, lifelog, and PWA migration remain pending. No additional t
 ran during activation; this docs-only update changes no source code and adds or
 reruns no tests. The 270-test record above is unchanged.
 
+## Separate Tasks-write authorization (local only)
+
+**Code/review milestone complete, 2026-11-04; not activated.** The built-debug, not
+installed `tasks auth login/status/logout` concretely selects
+`AuthProfile::TasksWrite`. The flow, provider and storage codec require exactly
+`https://www.googleapis.com/auth/tasks` plus `openid`; extra, mixed, duplicate and
+wrong-profile scope sets fail closed. Initial exchange requires explicit scopes
+and a refresh token; omitted refresh scopes retain the previously validated set.
+Neither `tasks.readonly` nor Calendar Events authorizes Tasks PATCH. No Tasks
+mutation implementation is delivered by this profile.
+
+| Profile | Exact scopes (plus `openid`) | Native Keychain service | OS-user lock namespace |
+| --- | --- | --- | --- |
+| TasksReadonly (default, capture `personal`) | `https://www.googleapis.com/auth/tasks.readonly` | `hive/google-captures/v1` | `google-auth` |
+| TasksWrite (`tasks auth`) | `https://www.googleapis.com/auth/tasks` | `hive/google-tasks-write/v1` | `google-tasks-write-auth` |
+| CalendarEvents (`calendar auth`, deferred) | `https://www.googleapis.com/auth/calendar.events` | `hive/google-calendar/v1` | `google-calendar-auth` |
+
+Even identical aliases select separate local records/locks. Existing readonly and
+Calendar profiles/defaults/wire formats remain untouched. Do not broaden, replace,
+revoke, or export the working `personal` grant. Each lock directory lives beneath
+the effective OS user's `Library/Application Support/Hive`, not inherited HOME/XDG;
+the private-directory, hashed-file, five-second Busy and persistent-inode rules
+above apply per profile. Native `MacKeychainStore` is local macOS only,
+nonsynchronizing, without plaintext or environment fallback.
+
+Login explicitly reads the selected private Desktop client JSON before native
+setup, then performs PKCE/browser consent, exact-scope validation and UserInfo
+account binding under the profile's credential lock. Status accesses local secure
+storage only, not remote grant validity. Logout clears local client/refresh grant,
+retains the identity tombstone and advances the credential generation when clearing
+a grant. Neither status nor logout calls Google. Local-only still allows OS prompts.
+**Logout does not revoke Google's grant or retract a bearer already returned to an
+in-flight operation**; the auth lock ends before the exact Tasks GET.
+
+Separate local storage/lock domains do **not** prove independent Google-side
+consent, refresh-token or revocation lifecycles when sharing client/project/account.
+Prefer a separate Desktop OAuth client to reduce consent coupling; do not use the
+working capture application's consent/revocation as a workaround. Google scope
+rejection remains fail-closed even if a shared grant returns combined scopes.
+
+The Tasks write scope is broader than the pilot: OAuth does not constrain it to
+one task or due-only updates. The future executor must independently bind the verified
+Google account, list and exact provider task from the reviewed receipt-backed
+handoff, authenticate an exact-task GET, and enforce conditional due-only PATCH
+and conflict checks. Operator observation JSON and matching due are not write
+authority or proof of a Hive mutation. No create/delete/reschedule/clear/completion
+is allowed in the pilot.
+
+Hosted secret storage and refresh-token rotation/recovery are remaining design
+and activation gates. macOS Keychain is not a Linux runner backend; do not put
+tokens/client secrets in notes, handoffs, source, logs, or artifacts. Review secure
+durable rotation, serialization and failed-save recovery before hosting credentials;
+do not assume Google and secret storage form one transaction. Separate local
+profiles do not by themselves isolate Google-side consent/revocation lifecycles.
+No login, credential export/install, hosted secret changes, or provider writes are
+authorized by this documentation update.
+
+### TasksWrite example usage and read flow
+
+**Activation-sensitive login/observe examples: NOT executed, NOT instructions to
+run now.** Login can open consent and persist credentials; observe refreshes and
+contacts Google. Status/logout touch local secure storage only (possibly OS prompts),
+not Google. These are independent examples, not a sequence to run through logout:
+
+```sh
+./target/debug/hive tasks auth login --connection tasks-write-personal --client-json /ABS/private/desktop-client.json
+./target/debug/hive tasks auth status --connection tasks-write-personal
+./target/debug/hive tasks auth logout --connection tasks-write-personal
+./target/debug/hive tasks observe --connection tasks-write-personal --handoff /ABS/private/reviewed-handoff.json
+```
+
+Observe validates the bounded handoff and exact tuple before native setup, performs
+one saved-grant refresh plus fresh UserInfo, matches the handoff account namespace,
+then uses the same token for exact task GET. Rotation is saved before UserInfo under
+the selected credential lock; failed saves can require reauthorization. No implicit
+browser, environment bearer, provider/list/task overrides, retries, redirects or
+list fallback exist. No queue/note/Git changes or task mutation occur.
+
+Its unsigned `google-task-live-observation` includes digest/time/exact tuple and
+nested observation. `remoteReadVerifiedDuringCollection: true` is producing-execution
+provenance only, not portable authority; `portableEvidenceAuthenticated`,
+`publicationReady`, `pushVerified`, `conditionalWriteSafe` and `hiveWriteProven` are
+false. Offline due-plan rejects the wrapper/provenance fields. Explicit extraction
+of nested observation uses the old schema but remains operator asserted, with
+`remoteVerified: false`. Files, hashes and time provide no authenticity or dispatch
+right. See [full contract and limits](google-tasks-writeback.md#separate-auth-and-exact-task-observation).
+
+[Current independently run targeted validation](release.md#google-tasks-auth-and-exact-read-checkpoint-2026-11-04)
+uses fake credentials/provider and loopback fixtures, not live Keychain, browser,
+Google or user state. Native TasksWrite consent/storage and live observation remain
+unexercised. No PATCH, ACK or hosted workflow is activated.
+
 ## Separate Calendar authorization (local only)
+
+> **Deferred / superseded publication target, 2026-11-03.** The existing local
+> Calendar profile and evidence below are preserved, not removed or activated.
+> Calendar consent/setup examples are historical conditional guidance, not the
+> current next step. The current local TasksWrite profile is described
+> above; leave the live readonly connection unchanged.
 
 `hive calendar auth login/status/logout` explicitly selects the Calendar Events
 profile. It requests exactly `https://www.googleapis.com/auth/calendar.events`
@@ -283,8 +390,8 @@ must independently bind the selected calendar and verified Google account.
 
 Calendar grants use native Keychain service `hive/google-calendar/v1` and the
 OS-user lock directory `Library/Application Support/Hive/google-calendar-auth`.
-Tasks retains `hive/google-captures/v1`, `google-auth`, and the existing wire format
-and defaults. Even identical aliases select separate local records. The flow,
+TasksReadonly retains `hive/google-captures/v1`, `google-auth`, and the existing
+wire format and defaults. Even identical aliases select separate local records. The flow,
 provider and storage codec enforce the selected profile's exact scope set; mixed,
 extra, duplicate and wrong-profile scopes fail closed. Account tombstones and
 refresh-token rotation safeguards apply to both profiles.
@@ -332,6 +439,8 @@ Calendar authorization or native Keychain I/O has been exercised for this profil
 - [PKCE, callback, and browser launch](../crates/hive-google-auth/src/loopback.rs)
 - [Native storage and OS-user lock root](../crates/hive-google-auth/src/storage.rs)
 - [CLI credential selection](../crates/hive/src/captures_auth.rs)
+- [Tasks CLI profile selection](../crates/hive/src/tasks.rs)
+- [Handoff-bound exact read](../crates/hive/src/tasks_observe.rs)
 - [Verified identity namespace](../crates/hive-core/src/google_identity.rs)
 - [Capture queue identity bindings](../crates/hive-capture/src/store.rs)
 - [Google native-app OAuth guidance](https://developers.google.com/identity/protocols/oauth2/native-app)

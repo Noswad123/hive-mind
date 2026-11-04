@@ -11,6 +11,8 @@ use crate::GoogleTask;
 
 const BASE_URL: &str = "https://tasks.googleapis.com/tasks/v1/";
 const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TASK_BYTES: u64 = 64 * 1024;
+const MAX_TASK_ID_BYTES: usize = 4096;
 const MAX_PAGES: usize = 100;
 const MAX_ITEMS: usize = 10_000;
 
@@ -127,6 +129,77 @@ impl GoogleTasksClient {
         self.snapshot(url, |task: &GoogleTask| valid_identifier(&task.id))
     }
 
+    /// Validates single-task identifiers without credentials or network access.
+    pub fn validate_task_ids(list_id: &str, task_id: &str) -> Result<()> {
+        for (id, message) in [
+            (list_id, "invalid Google task list ID"),
+            (task_id, "invalid Google task ID"),
+        ] {
+            ensure!(
+                valid_identifier(id) && id.len() <= MAX_TASK_ID_BYTES && !matches!(id, "." | ".."),
+                "{message}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Reads exactly one resource. Callers must separately validate whether its
+    /// lifecycle and shape are supported for their operation.
+    pub fn get_task(&self, list_id: &str, task_id: &str) -> Result<GoogleTask> {
+        Self::validate_task_ids(list_id, task_id)?;
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .map_err(|_| anyhow!("invalid Google endpoint"))?
+            .pop_if_empty()
+            .extend(["lists", list_id, "tasks", task_id]);
+        // Discard transport/provider error chains, which can contain secrets.
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|_| anyhow!("Google Tasks request failed; no automatic retry"))?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            let hint = match status {
+                401 => "provide a valid access token; no automatic refresh",
+                403 => "check account permissions; do not retry unchanged",
+                404 => "task not found; no automatic retry",
+                429 | 500..=599 => "retry later; no automatic retry",
+                300..=399 => "redirect refused; no automatic retry",
+                _ => "unexpected response; no automatic retry",
+            };
+            return Err(anyhow!("Google Tasks HTTP {status}: {hint}"));
+        }
+        ensure!(
+            response
+                .content_length()
+                .is_none_or(|size| size <= MAX_TASK_BYTES),
+            "Google Tasks resource exceeds size limit"
+        );
+        let mut bytes = Vec::new();
+        response
+            .take(MAX_TASK_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| anyhow!("could not read Google Tasks resource; no automatic retry"))?;
+        ensure!(
+            bytes.len() as u64 <= MAX_TASK_BYTES,
+            "Google Tasks resource exceeds size limit"
+        );
+        let resource: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid Google Tasks resource"))?;
+        ensure!(
+            resource.is_object()
+                && ["id", "title", "status"]
+                    .iter()
+                    .all(|key| resource.get(key).is_some_and(serde_json::Value::is_string)),
+            "invalid Google Tasks resource"
+        );
+        let task: GoogleTask = serde_json::from_value(resource)
+            .map_err(|_| anyhow!("invalid Google Tasks resource"))?;
+        ensure!(task.id == task_id, "Google Tasks resource ID mismatch");
+        Ok(task)
+    }
+
     fn snapshot<T: DeserializeOwned>(
         &self,
         mut url: Url,
@@ -211,7 +284,7 @@ mod tests {
     use std::{
         io::Write,
         net::TcpListener,
-        sync::{Arc, Mutex},
+        sync::{Arc, Mutex, mpsc},
         thread,
         time::Instant,
     };
@@ -221,6 +294,7 @@ mod tests {
     struct Server {
         base: String,
         requests: Arc<Mutex<Vec<String>>>,
+        stop: mpsc::Sender<()>,
         worker: Option<thread::JoinHandle<()>>,
     }
 
@@ -231,13 +305,19 @@ mod tests {
             let base = format!("http://{}/tasks/v1/", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let captured = requests.clone();
+            let (stop, stopped) = mpsc::channel();
             let worker = thread::spawn(move || {
-                for response in responses {
+                let mut responses = responses.into_iter();
+                loop {
+                    let response = responses.next();
                     let deadline = Instant::now() + Duration::from_secs(5);
                     let mut stream = loop {
                         match listener.accept() {
                             Ok((stream, _)) => break stream,
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                if response.is_none() && stopped.try_recv().is_ok() {
+                                    return;
+                                }
                                 assert!(Instant::now() < deadline, "mock accept timed out");
                                 thread::sleep(Duration::from_millis(5));
                             }
@@ -265,6 +345,10 @@ mod tests {
                         .unwrap()
                         .push(String::from_utf8(request).unwrap());
                     // A size-limit rejection can close the connection early.
+                    let response = response.unwrap_or_else(|| {
+                        "HTTP/1.1 500 Unexpected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_owned()
+                    });
                     if let Err(error) = stream.write_all(response.as_bytes()) {
                         assert!(
                             matches!(
@@ -281,6 +365,7 @@ mod tests {
             Self {
                 base,
                 requests,
+                stop,
                 worker: Some(worker),
             }
         }
@@ -290,6 +375,7 @@ mod tests {
         }
 
         fn finish(mut self) -> Vec<String> {
+            self.stop.send(()).unwrap();
             self.worker.take().unwrap().join().unwrap();
             Arc::try_unwrap(self.requests)
                 .unwrap()
@@ -349,6 +435,201 @@ mod tests {
             SECRET.to_ascii_lowercase()
         )));
         url
+    }
+
+    #[test]
+    fn get_task_encodes_exact_get_and_preserves_resource_without_following_links() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let task_id = "task/with?x=#% +";
+        let link = format!("http://{}/private-body", destination.local_addr().unwrap());
+        let body = serde_json::json!({
+            "id": task_id, "title": "Task", "status": "completed",
+            "deleted": true, "hidden": true, "selfLink": link,
+            "webViewLink": link, "future": {"x": 1}
+        })
+        .to_string();
+        let server = Server::new(vec![ok(&body)]);
+        let client = server.client();
+        assert!(!format!("{:?}", client.client).contains(SECRET));
+        let task = client.get_task("list/with?x=#% +", task_id).unwrap();
+        assert_eq!(task.id, task_id);
+        assert_eq!(task.title, "Task");
+        assert_eq!(task.status, "completed");
+        assert!(task.deleted && task.hidden);
+        assert_eq!(task.extra["future"]["x"], 1);
+        let requests = server.finish();
+        assert_eq!(requests.len(), 1);
+        let url = request_url(&requests[0]);
+        assert_eq!(
+            url.path(),
+            "/tasks/v1/lists/list%2Fwith%3Fx=%23%25%20+/tasks/task%2Fwith%3Fx=%23%25%20+"
+        );
+        assert!(url.query().is_none() && url.fragment().is_none());
+        assert!(requests[0].ends_with("\r\n\r\n"));
+        assert!(
+            matches!(destination.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn get_task_validates_both_ids_before_network() {
+        let server = Server::new(vec![]);
+        let client = server.client();
+        for id in [
+            "",
+            "  ",
+            ".",
+            "..",
+            "a\nb",
+            "a\0b",
+            "a\u{7f}b",
+            "a\u{85}b",
+            &"x".repeat(MAX_TASK_ID_BYTES + 1),
+        ] {
+            for (list, task) in [(id, "task"), ("list", id)] {
+                safe_error(GoogleTasksClient::validate_task_ids(list, task));
+                safe_error(client.get_task(list, task));
+            }
+        }
+        for id in [
+            "x".repeat(MAX_TASK_ID_BYTES),
+            "é".repeat(MAX_TASK_ID_BYTES / 2),
+            "%2e%2e/?.#".into(),
+        ] {
+            GoogleTasksClient::validate_task_ids(&id, &id).unwrap();
+        }
+        safe_error(GoogleTasksClient::validate_task_ids(
+            "list",
+            &"é".repeat(MAX_TASK_ID_BYTES / 2 + 1),
+        ));
+        assert!(server.finish().is_empty());
+    }
+
+    #[test]
+    fn get_task_requires_object_required_strings_and_matching_id() {
+        for body in [
+            "private-body",
+            "{",
+            "[]",
+            "null",
+            r#"["task","Title","needsAction"]"#,
+            r#"{}"#,
+            r#"{"title":"Title","status":"needsAction"}"#,
+            r#"{"id":"task","status":"needsAction"}"#,
+            r#"{"id":"task","title":"Title"}"#,
+            r#"{"id":null,"title":"Title","status":"needsAction"}"#,
+            r#"{"id":"task","title":null,"status":"needsAction"}"#,
+            r#"{"id":"task","title":"Title","status":null}"#,
+            r#"{"id":42,"title":"Title","status":"needsAction"}"#,
+            r#"{"id":"task","title":42,"status":"needsAction"}"#,
+            r#"{"id":"task","title":"Title","status":42}"#,
+            r#"{"id":"other","title":"Title","status":"needsAction"}"#,
+            r#"{"id":"","title":"Title","status":"needsAction"}"#,
+            r#"{"id":"task","title":"Title","status":"needsAction","hidden":"true"}"#,
+            r#"{"id":"task","title":"Title","status":"needsAction"} private-body"#,
+        ] {
+            let server = Server::new(vec![ok(body)]);
+            safe_error(server.client().get_task("list", "task"));
+            assert_eq!(server.finish().len(), 1);
+        }
+    }
+
+    #[test]
+    fn get_task_accepts_fixed_and_chunked_resources_at_size_limit() {
+        let mut body = r#"{"id":"task","title":"","status":"needsAction"}"#.to_owned();
+        body.extend(std::iter::repeat_n(
+            ' ',
+            MAX_TASK_BYTES as usize - body.len(),
+        ));
+        for wire in [ok(&body), chunked(&body, 8192), chunked(&body, body.len())] {
+            let server = Server::new(vec![wire]);
+            assert_eq!(server.client().get_task("list", "task").unwrap().id, "task");
+            assert_eq!(server.finish().len(), 1);
+        }
+    }
+
+    #[test]
+    fn get_task_rejects_oversized_fixed_and_chunked_resources() {
+        let body = "x".repeat(MAX_TASK_BYTES as usize + 1);
+        for wire in [
+            ok(&body),
+            chunked(&body, 8192),
+            chunked(&body, body.len()),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_TASK_BYTES + 1
+            ),
+        ] {
+            let server = Server::new(vec![wire]);
+            assert!(safe_error(server.client().get_task("list", "task")).contains("size limit"));
+            assert_eq!(server.finish().len(), 1);
+        }
+    }
+
+    #[test]
+    fn get_task_redacts_malformed_or_truncated_transport_bodies() {
+        for wire in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nprivate-body",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nprivate-body\r\n",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n100\r\nprivate-body",
+        ] {
+            let server = Server::new(vec![wire.into()]);
+            assert!(
+                safe_error(server.client().get_task("list", "task")).contains("could not read")
+            );
+            assert_eq!(server.finish().len(), 1);
+        }
+        let server = Server::new(vec![chunked("private-body", 1)]);
+        assert!(safe_error(server.client().get_task("list", "task")).contains("invalid"));
+        assert_eq!(server.finish().len(), 1);
+    }
+
+    #[test]
+    fn get_task_requires_200_and_never_retries_follows_redirects_or_lists() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let link = format!(
+            "http://{}/private-page-token",
+            destination.local_addr().unwrap()
+        );
+        for status in [
+            201, 202, 204, 206, 301, 302, 303, 304, 307, 308, 401, 403, 404, 429, 500, 502, 503,
+            504,
+        ] {
+            let body = format!("private-body {SECRET} {link}");
+            let wire = format!(
+                "HTTP/1.1 {status} Mock\r\nLocation: {link}\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let server = Server::new(vec![wire]);
+            let message = safe_error(server.client().get_task("private-page-token", "task"));
+            assert!(message.contains(&format!("HTTP {status}")));
+            let requests = server.finish();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                request_url(&requests[0]).path(),
+                "/tasks/v1/lists/private-page-token/tasks/task"
+            );
+            assert!(
+                matches!(destination.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
+    }
+
+    #[test]
+    fn get_task_transport_errors_have_no_private_url_or_error_chain() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let base = format!("http://{address}/tasks/v1/");
+        drop(listener);
+        let error = safe_error(
+            GoogleTasksClient::with_base_url(SECRET, &base)
+                .unwrap()
+                .get_task("private-page-token", "private-body"),
+        );
+        assert!(!error.contains(&address.to_string()));
+        assert!(!error.contains("127.0.0.1"));
     }
 
     #[test]

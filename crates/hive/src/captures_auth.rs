@@ -514,11 +514,11 @@ mod tests {
     }
 
     #[test]
-    fn calendar_command_plumbing_uses_separate_profile_and_local_status_logout() {
-        struct CalendarStore(Store);
+    fn separate_profile_command_plumbing_and_local_status_logout() {
+        struct CalendarStore(Store, AuthProfile);
         impl CredentialStore for CalendarStore {
             fn profile(&self) -> AuthProfile {
-                AuthProfile::CalendarEvents
+                self.1
             }
             fn lock(
                 &self,
@@ -537,10 +537,10 @@ mod tests {
                 self.0.save(connection, record)
             }
         }
-        struct CalendarFlow<'a>(&'a Store);
+        struct CalendarFlow<'a>(&'a Store, AuthProfile);
         impl AuthorizationFlow for CalendarFlow<'_> {
             fn profile(&self) -> AuthProfile {
-                AuthProfile::CalendarEvents
+                self.1
             }
             fn authorize(
                 &self,
@@ -549,74 +549,76 @@ mod tests {
                 Flow(self.0).authorize(client)
             }
         }
-        let file = client_file();
-        let tasks = Store::default();
-        let tasks_transport = Transport::new(&tasks);
-        execute_with(login(&file), &tasks, &tasks_transport, &Flow(&tasks)).unwrap();
-        let tasks_before = format!("{:?}", tasks.record.lock().unwrap());
-        let calendar = CalendarStore(Store::default());
-        let transport = Transport {
-            profile: AuthProfile::CalendarEvents,
-            ..Transport::new(&calendar.0)
-        };
-        let status = execute_with(
-            login(&file),
-            &calendar,
-            &transport,
-            &CalendarFlow(&calendar.0),
-        )
-        .unwrap();
-        assert_eq!(status.scopes, AuthProfile::CalendarEvents.scopes());
-        let local = Transport::new(&calendar.0);
-        let before = execute_with(
-            CaptureAuthCommand::Status {
-                connection: "work".into(),
-            },
-            &calendar,
-            &local,
-            &CalendarFlow(&calendar.0),
-        )
-        .unwrap();
-        let after = execute_with(
-            CaptureAuthCommand::Logout {
-                connection: "work".into(),
-            },
-            &calendar,
-            &local,
-            &CalendarFlow(&calendar.0),
-        )
-        .unwrap();
-        assert!(before.credential_stored);
-        assert!(!after.credential_stored);
-        assert_eq!(before.account_namespace, after.account_namespace);
-        assert_eq!(
-            calendar
-                .0
-                .record
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .generation,
-            2
-        );
-        assert_eq!(local.exchanges.load(SeqCst), 0);
-        assert_eq!(local.refreshes.load(SeqCst), 0);
-        assert_eq!(local.identities.load(SeqCst), 0);
-        assert_eq!(format!("{:?}", tasks.record.lock().unwrap()), tasks_before);
-        assert_eq!(
-            tasks
-                .record
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .grant
-                .as_ref()
-                .unwrap()
-                .scopes,
-            REQUIRED_SCOPES
-        );
+        for profile in [AuthProfile::CalendarEvents, AuthProfile::TasksWrite] {
+            let file = client_file();
+            let tasks = Store::default();
+            let tasks_transport = Transport::new(&tasks);
+            execute_with(login(&file), &tasks, &tasks_transport, &Flow(&tasks)).unwrap();
+            let tasks_before = format!("{:?}", tasks.record.lock().unwrap());
+            let calendar = CalendarStore(Store::default(), profile);
+            let transport = Transport {
+                profile,
+                ..Transport::new(&calendar.0)
+            };
+            let status = execute_with(
+                login(&file),
+                &calendar,
+                &transport,
+                &CalendarFlow(&calendar.0, profile),
+            )
+            .unwrap();
+            assert_eq!(status.scopes, profile.scopes());
+            let local = Transport::new(&calendar.0);
+            let before = execute_with(
+                CaptureAuthCommand::Status {
+                    connection: "work".into(),
+                },
+                &calendar,
+                &local,
+                &CalendarFlow(&calendar.0, profile),
+            )
+            .unwrap();
+            let after = execute_with(
+                CaptureAuthCommand::Logout {
+                    connection: "work".into(),
+                },
+                &calendar,
+                &local,
+                &CalendarFlow(&calendar.0, profile),
+            )
+            .unwrap();
+            assert!(before.credential_stored);
+            assert!(!after.credential_stored);
+            assert_eq!(before.account_namespace, after.account_namespace);
+            assert_eq!(
+                calendar
+                    .0
+                    .record
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .generation,
+                2
+            );
+            assert_eq!(local.exchanges.load(SeqCst), 0);
+            assert_eq!(local.refreshes.load(SeqCst), 0);
+            assert_eq!(local.identities.load(SeqCst), 0);
+            assert_eq!(format!("{:?}", tasks.record.lock().unwrap()), tasks_before);
+            assert_eq!(
+                tasks
+                    .record
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .grant
+                    .as_ref()
+                    .unwrap()
+                    .scopes,
+                REQUIRED_SCOPES
+            );
+        }
     }
     fn args(connection: Option<&str>, environment: Option<&str>) -> GoogleCredentialArgs {
         GoogleCredentialArgs {

@@ -8,6 +8,7 @@ use serde::Serialize;
 mod calendar;
 mod captures_auth;
 mod captures_background;
+mod tasks;
 use captures_auth::{CaptureAuthCommand, GoogleCredentialArgs, ResolvedGoogleClient};
 
 const DEFAULT_TOKEN_KEYCHAIN_SERVICE: &str = "mw/hive-sync";
@@ -25,6 +26,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Google Tasks auth, exact read, portable handoff, and advisory committed-source planning.
+    Tasks {
+        #[command(subcommand)]
+        command: tasks::TasksCommand,
+    },
     /// Local Calendar planning and separate OAuth management; no event publication.
     Calendar {
         #[command(subcommand)]
@@ -674,6 +680,7 @@ async fn main() -> Result<()> {
     }) {
         Commands::Version { short } => version_command(short),
         Commands::Calendar { command } => calendar::command(command),
+        Commands::Tasks { command } => tasks::dispatch(move || tasks::command(command)).await,
         Commands::Captures { command } => {
             tokio::task::spawn_blocking(move || captures_command(command))
                 .await

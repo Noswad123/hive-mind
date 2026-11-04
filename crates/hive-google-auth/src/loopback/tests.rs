@@ -60,7 +60,11 @@ fn full_flow_binds_before_browser_and_uses_pkce_and_exact_scopes() {
         LoopbackFlow::default().profile().scopes(),
         crate::REQUIRED_SCOPES
     );
-    for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+    for profile in [
+        AuthProfile::TasksReadonly,
+        AuthProfile::TasksWrite,
+        AuthProfile::CalendarEvents,
+    ] {
         let observed = Arc::new(Mutex::new(None));
         let copy = observed.clone();
         let worker = Arc::new(Mutex::new(None));

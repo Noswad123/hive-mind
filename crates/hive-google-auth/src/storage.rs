@@ -595,7 +595,11 @@ mod tests {
 
     #[test]
     fn profile_codecs_reject_cross_combined_extra_and_duplicate_scopes() {
-        for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+        for profile in [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ] {
             let mut original = record();
             let exact: Vec<String> = profile.scopes().iter().map(|s| (*s).into()).collect();
             original.grant.as_mut().unwrap().scopes = exact.clone();
@@ -627,6 +631,10 @@ mod tests {
                 [exact.clone(), vec!["extra".into()]].concat(),
                 vec![exact[0].clone(), exact[0].clone()],
                 [exact.clone(), vec!["openid".into()]].concat(),
+                vec![],
+                vec![exact[0].clone()],
+                vec![crate::OPENID_SCOPE.into()],
+                [exact.clone(), vec![crate::TASKS_WRITE_SCOPE.into()]].concat(),
             ] {
                 original.grant.as_mut().unwrap().scopes = scopes.clone();
                 assert!(matches!(
@@ -674,6 +682,7 @@ mod tests {
         let home = temp.path().canonicalize().unwrap();
         let records = Records::default();
         let tasks = Memory(AuthProfile::TasksReadonly, &records);
+        let write = Memory(AuthProfile::TasksWrite, &records);
         let calendar = Memory(AuthProfile::CalendarEvents, &records);
         let tasks_store = MacKeychainStore::with_os_home(|_| Ok(home.clone()), false).unwrap();
         let calendar_store =
@@ -686,10 +695,19 @@ mod tests {
             home.join("Library/Application Support/Hive/google-calendar-auth")
         );
         assert_eq!(calendar.0.service(), "hive/google-calendar/v1");
+        let write_store =
+            MacKeychainStore::with_profile_os_home(|_| Ok(home.clone()), false, write.0).unwrap();
+        assert_eq!(write_store.profile(), AuthProfile::TasksWrite);
+        assert_eq!(
+            write_store.lock_dir,
+            home.join("Library/Application Support/Hive/google-tasks-write-auth")
+        );
+        assert_eq!(write.0.service(), "hive/google-tasks-write/v1");
         let _tasks_lock = FileLock::acquire(&tasks_store.lock_dir, "work", Duration::ZERO).unwrap();
+        let _write_lock = FileLock::acquire(&write_store.lock_dir, "work", Duration::ZERO).unwrap();
         let _calendar_lock =
             FileLock::acquire(&calendar_store.lock_dir, "work", Duration::ZERO).unwrap();
-        for profile in [tasks.0, calendar.0] {
+        for profile in [tasks.0, write.0, calendar.0] {
             let options = options("work", false, profile);
             let key = unsafe {
                 CFString::wrap_under_get_rule(security_framework_sys::item::kSecAttrService)
@@ -711,6 +729,12 @@ mod tests {
         calendar_record.grant.as_mut().unwrap().scopes =
             calendar.0.scopes().iter().map(|s| (*s).into()).collect();
         save_with(&calendar, "work", &calendar_record).unwrap();
+        assert!(load_with(&write, "work").unwrap().is_none());
+        let mut write_record = record();
+        write_record.grant.as_mut().unwrap().scopes =
+            write.0.scopes().iter().map(|s| (*s).into()).collect();
+        save_with(&write, "work", &write_record).unwrap();
+        let write_bytes = records.lock().unwrap()[&(write.0.service(), "work".into())].clone();
         calendar_record.generation += 1;
         calendar_record.grant = None;
         save_with(&calendar, "work", &calendar_record).unwrap();
@@ -726,6 +750,25 @@ mod tests {
             &*tasks_bytes
         );
         assert!(load_with(&tasks, "work").unwrap().unwrap().grant.is_some());
+        assert_eq!(
+            &*records.lock().unwrap()[&(write.0.service(), "work".into())],
+            &*write_bytes
+        );
+        write_record.generation += 1;
+        write_record.grant = None;
+        save_with(&write, "work", &write_record).unwrap();
+        assert!(load_with(&write, "work").unwrap().unwrap().grant.is_none());
+        assert_eq!(
+            &*records.lock().unwrap()[&(tasks.0.service(), "work".into())],
+            &*tasks_bytes
+        );
+        assert!(
+            load_with(&calendar, "work")
+                .unwrap()
+                .unwrap()
+                .grant
+                .is_none()
+        );
     }
 
     #[cfg(target_os = "macos")]

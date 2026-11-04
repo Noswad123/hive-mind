@@ -193,6 +193,8 @@ fn scope_mismatch(scopes: Option<&[String]>) -> AuthError {
     let response_missing = scopes.is_none();
     let scopes = scopes.unwrap_or_default();
     let mut tasks_readonly = false;
+    let mut tasks_write = false;
+    let mut calendar_events = false;
     let mut openid = false;
     let mut userinfo_email = false;
     let mut userinfo_profile = false;
@@ -202,6 +204,8 @@ fn scope_mismatch(scopes: Option<&[String]>) -> AuthError {
         duplicates |= scopes[..index].contains(scope);
         match scope.as_str() {
             crate::TASKS_SCOPE => tasks_readonly = true,
+            crate::TASKS_WRITE_SCOPE => tasks_write = true,
+            crate::CALENDAR_EVENTS_SCOPE => calendar_events = true,
             crate::OPENID_SCOPE => openid = true,
             "email" | "https://www.googleapis.com/auth/userinfo.email" => userinfo_email = true,
             "profile" | "https://www.googleapis.com/auth/userinfo.profile" => {
@@ -212,6 +216,8 @@ fn scope_mismatch(scopes: Option<&[String]>) -> AuthError {
     }
     AuthError::ScopeMismatch {
         tasks_readonly,
+        tasks_write,
+        calendar_events,
         openid,
         userinfo_email,
         userinfo_profile,
@@ -488,53 +494,220 @@ mod tests {
     }
 
     #[test]
-    fn calendar_refresh_with_omitted_scopes_returns_verified_bound_token() {
-        for rotation in [None, Some("rotated-refresh-secret")] {
-            let profile = AuthProfile::CalendarEvents;
-            let store = ProfileStore(profile, connected());
-            let calendar_scopes: Vec<String> =
-                profile.scopes().iter().map(|s| (*s).into()).collect();
-            store
-                .1
-                .records
-                .lock()
-                .unwrap()
-                .get_mut("work")
-                .unwrap()
-                .grant
-                .as_mut()
-                .unwrap()
-                .scopes = calendar_scopes.clone();
+    fn every_cross_profile_flow_is_rejected_before_consent_or_storage() {
+        struct NoConsent(AuthProfile);
+        impl AuthorizationFlow for NoConsent {
+            fn profile(&self) -> AuthProfile {
+                self.0
+            }
+            fn authorize(&self, _: &ClientConfig) -> Result<AuthorizationGrant> {
+                panic!("mismatched flow must not request consent");
+            }
+        }
+        let profiles = [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ];
+        for profile in profiles {
+            let store = ProfileStore(profile, Store::default());
             let transport = Transport::default();
-            let mut response = tokens(rotation);
-            response.scopes = None;
-            *transport.refresh.lock().unwrap() = Some(Ok(response));
+            for other in profiles.into_iter().filter(|other| *other != profile) {
+                assert_eq!(
+                    Authenticator::new(&store, &transport)
+                        .login("work", &client(), &NoConsent(other))
+                        .unwrap_err(),
+                    AuthError::ProfileMismatch
+                );
+            }
+            assert_eq!(store.1.locks.load(Ordering::SeqCst), 0);
+            assert_eq!(store.1.saves.load(Ordering::SeqCst), 0);
+            no_network(&transport);
+        }
+    }
 
-            let attempt = Authenticator::new(&store, &transport).access_token_attempt("work");
-            let expected_generation = if rotation.is_some() { 8 } else { 7 };
-            assert_eq!(attempt.generation, Some(expected_generation));
-            let bound = attempt.outcome.unwrap();
-            assert_eq!(bound.token.expose(), ACCESS);
-            assert_eq!(bound.identity, GoogleIdentity::new(SUBJECT).unwrap());
-            let record = store.1.records.lock().unwrap()["work"].clone();
-            assert_eq!(record.identity, bound.identity);
-            assert_eq!(record.generation, expected_generation);
-            let grant = record.grant.unwrap();
-            assert_eq!(grant.scopes, calendar_scopes);
-            assert_eq!(grant.refresh_token.expose(), rotation.unwrap_or(REFRESH));
-            assert_eq!(
-                store.1.saves.load(Ordering::SeqCst),
-                usize::from(rotation.is_some())
-            );
-            assert_eq!(transport.refreshes.load(Ordering::SeqCst), 1);
-            assert_eq!(transport.identities.load(Ordering::SeqCst), 1);
-            assert_eq!(transport.exchanges.load(Ordering::SeqCst), 0);
+    #[test]
+    fn profiles_release_locks_and_return_no_token_on_save_or_identity_failure() {
+        for profile in [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ] {
+            for fail_save in [false, true] {
+                let store = ProfileStore(profile, connected());
+                let exact: Vec<String> = profile.scopes().iter().map(|s| (*s).into()).collect();
+                store
+                    .1
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get_mut("work")
+                    .unwrap()
+                    .grant
+                    .as_mut()
+                    .unwrap()
+                    .scopes = exact.clone();
+                let before = snapshot(&store.1);
+                store.1.fail_save.store(fail_save, Ordering::SeqCst);
+                let transport = Transport::default();
+                if !fail_save {
+                    *transport.identity.lock().unwrap() =
+                        Ok(GoogleIdentity::new("wrong-subject").unwrap());
+                }
+                let expected = if fail_save {
+                    AuthError::StorageUnavailable
+                } else {
+                    AuthError::IdentityMismatch
+                };
+                let mut response = tokens(Some(REFRESH));
+                response.scopes = Some(exact.clone());
+                *transport.exchange.lock().unwrap() = Some(Ok(response));
+                let auth = Authenticator::new(&store, &transport);
+                assert_eq!(
+                    auth.login("work", &client(), &ProfileFlow(profile))
+                        .unwrap_err(),
+                    expected
+                );
+                assert_eq!(snapshot(&store.1), before);
+                assert!(!store.1.held.load(Ordering::SeqCst));
+                let identities = transport.identities.load(Ordering::SeqCst);
+                let mut response = tokens(Some("rotated-refresh-secret"));
+                response.scopes = Some(exact);
+                *transport.refresh.lock().unwrap() = Some(Ok(response));
+                let attempt = auth.access_token_attempt("work");
+                assert_eq!(attempt.outcome.unwrap_err(), expected);
+                assert_eq!(attempt.generation, Some(if fail_save { 7 } else { 8 }));
+                assert!(!store.1.held.load(Ordering::SeqCst));
+                if fail_save {
+                    assert_eq!(snapshot(&store.1), before);
+                    assert_eq!(transport.identities.load(Ordering::SeqCst), identities);
+                } else {
+                    let record = store.1.records.lock().unwrap()["work"].clone();
+                    assert_eq!(record.identity, GoogleIdentity::new(SUBJECT).unwrap());
+                    assert_eq!(
+                        record.grant.unwrap().refresh_token.expose(),
+                        "rotated-refresh-secret"
+                    );
+                }
+                assert!(auth.status("work").unwrap().credential_stored);
+            }
+        }
+    }
+
+    #[test]
+    fn tasks_write_lifecycle_keeps_other_profile_grants_and_tombstones_independent() {
+        let stores = [
+            ProfileStore(AuthProfile::TasksReadonly, Store::default()),
+            ProfileStore(AuthProfile::TasksWrite, Store::default()),
+            ProfileStore(AuthProfile::CalendarEvents, Store::default()),
+        ];
+        let transport = Transport::default();
+        for (index, store) in stores.iter().enumerate() {
+            *transport.identity.lock().unwrap() =
+                Ok(GoogleIdentity::new(format!("subject-{index}")).unwrap());
+            let mut response = tokens(Some(REFRESH));
+            response.scopes = Some(store.0.scopes().iter().map(|s| (*s).into()).collect());
+            *transport.exchange.lock().unwrap() = Some(Ok(response));
+            let status = Authenticator::new(store, &transport)
+                .login("work", &client(), &ProfileFlow(store.0))
+                .unwrap();
+            assert!(status.credential_stored);
+            assert_eq!(status.schema_version, "1");
+        }
+        let readonly = snapshot(&stores[0].1);
+        let calendar = snapshot(&stores[2].1);
+        *transport.identity.lock().unwrap() = Ok(GoogleIdentity::new("subject-1").unwrap());
+        let mut response = tokens(Some("rotated-refresh-secret"));
+        response.scopes = None;
+        *transport.refresh.lock().unwrap() = Some(Ok(response));
+        let auth = Authenticator::new(&stores[1], &transport);
+        assert_eq!(
+            auth.access_token_attempt("work")
+                .outcome
+                .unwrap()
+                .token
+                .expose(),
+            ACCESS
+        );
+        assert_eq!(stores[1].1.records.lock().unwrap()["work"].generation, 2);
+        let before = auth.status("work").unwrap();
+        let after = auth.logout("work").unwrap();
+        assert_eq!(before.account_namespace, after.account_namespace);
+        assert!(!after.credential_stored);
+        assert!(after.scopes.is_empty());
+        assert_eq!(stores[1].1.records.lock().unwrap()["work"].generation, 3);
+        assert_eq!(
+            auth.access_token("work").unwrap_err(),
+            AuthError::NotConnected
+        );
+        assert_eq!(snapshot(&stores[0].1), readonly);
+        assert_eq!(snapshot(&stores[2].1), calendar);
+        Authenticator::new(&stores[0], &transport)
+            .logout("work")
+            .unwrap();
+        Authenticator::new(&stores[2], &transport)
+            .logout("work")
+            .unwrap();
+        assert_eq!(stores[1].1.records.lock().unwrap()["work"].generation, 3);
+    }
+
+    #[test]
+    fn profiles_refresh_with_omitted_scopes_returns_verified_bound_token() {
+        for profile in [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ] {
+            for rotation in [None, Some("rotated-refresh-secret")] {
+                let store = ProfileStore(profile, connected());
+                let exact_scopes: Vec<String> =
+                    profile.scopes().iter().map(|s| (*s).into()).collect();
+                store
+                    .1
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get_mut("work")
+                    .unwrap()
+                    .grant
+                    .as_mut()
+                    .unwrap()
+                    .scopes = exact_scopes.clone();
+                let transport = Transport::default();
+                let mut response = tokens(rotation);
+                response.scopes = None;
+                *transport.refresh.lock().unwrap() = Some(Ok(response));
+
+                let attempt = Authenticator::new(&store, &transport).access_token_attempt("work");
+                let expected_generation = if rotation.is_some() { 8 } else { 7 };
+                assert_eq!(attempt.generation, Some(expected_generation));
+                let bound = attempt.outcome.unwrap();
+                assert_eq!(bound.token.expose(), ACCESS);
+                assert_eq!(bound.identity, GoogleIdentity::new(SUBJECT).unwrap());
+                let record = store.1.records.lock().unwrap()["work"].clone();
+                assert_eq!(record.identity, bound.identity);
+                assert_eq!(record.generation, expected_generation);
+                let grant = record.grant.unwrap();
+                assert_eq!(grant.scopes, exact_scopes);
+                assert_eq!(grant.refresh_token.expose(), rotation.unwrap_or(REFRESH));
+                assert_eq!(
+                    store.1.saves.load(Ordering::SeqCst),
+                    usize::from(rotation.is_some())
+                );
+                assert_eq!(transport.refreshes.load(Ordering::SeqCst), 1);
+                assert_eq!(transport.identities.load(Ordering::SeqCst), 1);
+                assert_eq!(transport.exchanges.load(Ordering::SeqCst), 0);
+            }
         }
     }
 
     #[test]
     fn profile_records_and_missing_login_scopes_fail_closed() {
-        for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+        for profile in [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ] {
             let store = ProfileStore(profile, connected());
             let transport = Transport::default();
             let auth = Authenticator::new(&store, &transport);
@@ -584,7 +757,11 @@ mod tests {
 
     #[test]
     fn profiles_fail_closed_and_preserve_refresh_and_local_lifecycle_rules() {
-        for profile in [AuthProfile::TasksReadonly, AuthProfile::CalendarEvents] {
+        for profile in [
+            AuthProfile::TasksReadonly,
+            AuthProfile::TasksWrite,
+            AuthProfile::CalendarEvents,
+        ] {
             let other = if profile == AuthProfile::TasksReadonly {
                 AuthProfile::CalendarEvents
             } else {
@@ -609,6 +786,9 @@ mod tests {
                 vec![exact[0].clone(), exact[0].clone()],
                 [exact.clone(), vec!["openid".into()]].concat(),
                 vec![],
+                vec![exact[0].clone()],
+                vec![crate::OPENID_SCOPE.into()],
+                [exact.clone(), vec![crate::TASKS_WRITE_SCOPE.into()]].concat(),
             ];
             for scopes in &invalid {
                 let mut response = tokens(Some(REFRESH));
@@ -718,7 +898,7 @@ mod tests {
                 false,
                 true,
                 false,
-                1,
+                0,
                 false,
             ),
             (
@@ -732,6 +912,10 @@ mod tests {
         ] {
             let expected = AuthError::ScopeMismatch {
                 tasks_readonly,
+                tasks_write: scope
+                    .as_ref()
+                    .is_some_and(|scopes| scopes.iter().any(|s| s == crate::TASKS_WRITE_SCOPE)),
+                calendar_events: false,
                 openid,
                 userinfo_email,
                 userinfo_profile: false,
@@ -1184,6 +1368,8 @@ mod tests {
                     .unwrap_err(),
                 AuthError::ScopeMismatch {
                     tasks_readonly,
+                    tasks_write: false,
+                    calendar_events: false,
                     openid,
                     userinfo_email,
                     userinfo_profile: false,
@@ -1220,7 +1406,14 @@ mod tests {
                 response.scopes = Some(
                     [
                         scopes(),
-                        vec![email.into(), profile.into(), UNKNOWN.into(), UNKNOWN.into()],
+                        vec![
+                            crate::TASKS_WRITE_SCOPE.into(),
+                            crate::CALENDAR_EVENTS_SCOPE.into(),
+                            email.into(),
+                            profile.into(),
+                            UNKNOWN.into(),
+                            UNKNOWN.into(),
+                        ],
                     ]
                     .concat(),
                 );
@@ -1236,6 +1429,8 @@ mod tests {
                     error,
                     AuthError::ScopeMismatch {
                         tasks_readonly: true,
+                        tasks_write: true,
+                        calendar_events: true,
                         openid: true,
                         userinfo_email: true,
                         userinfo_profile: true,
@@ -1246,17 +1441,20 @@ mod tests {
                 );
                 assert_eq!(
                     error.to_string(),
-                    "Google scope mismatch: tasks_readonly=true, openid=true, userinfo_email=true, userinfo_profile=true, unknown_count=2, duplicates=true, response_missing=false"
+                    "Google scope mismatch: tasks_readonly=true, tasks_write=true, calendar_events=true, openid=true, userinfo_email=true, userinfo_profile=true, unknown_count=2, duplicates=true, response_missing=false"
                 );
                 assert_eq!(
                     format!("{error:?}"),
-                    "ScopeMismatch { tasks_readonly: true, openid: true, userinfo_email: true, userinfo_profile: true, unknown_count: 2, duplicates: true, response_missing: false }"
+                    "ScopeMismatch { tasks_readonly: true, tasks_write: true, calendar_events: true, openid: true, userinfo_email: true, userinfo_profile: true, unknown_count: 2, duplicates: true, response_missing: false }"
                 );
                 let status = auth.status("work").unwrap();
                 let public = format!(
                     "{error}{error:?}{status:?}{}",
                     serde_json::to_string(&status).unwrap()
                 );
+                for scope in [crate::TASKS_WRITE_SCOPE, crate::CALENDAR_EVENTS_SCOPE] {
+                    assert!(!format!("{error}{error:?}").contains(scope));
+                }
                 for canary in [
                     UNKNOWN,
                     ACCESS,

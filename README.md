@@ -7,12 +7,64 @@ Hive Mind is the sync/API/mobile companion project for MindWeaver.
 - MindWeaver remains Markdown-first; Hive handles optional remote sync, device
   auth, the sync API, and the PWA companion.
 
+## Current priority — Google Tasks due writeback (2026-11-04)
+
+**Accepted target: edit canonical Markdown → commit AND PUSH to private NOTES
+`main` → GitHub-hosted workflow reads the exact pushed commit → update the SAME
+existing Google Task, due only. Do not create a Calendar event.** Calendar is now
+deferred; the Calendar sections below preserve historical implementation/evidence,
+not the current delivery target, and do not imply code was removed.
+
+The credential/provider-free local milestone is implemented in the **built-debug,
+not installed** `./target/debug/hive tasks handoff` and `tasks due-plan`: a portable,
+receipt-backed selected capture identity handoff and exact committed-source
+first-due planner. Desktop queue mappings are unavailable on hosted runners; export
+only the selected binding, never sync SQLite or infer identity from a title or
+reverse the stable marker. Explicitly accepted current baseline evidence must not
+be called the original capture baseline. Local plans remain advisory, with
+`publicationReady`, `remoteVerified`, `pushVerified`, `conditionalWriteSafe`, and
+`hiveWriteProven` false. Both commands emit JSON stdout and write no output files.
+
+**New local milestone complete: separate TasksWrite auth and handoff-bound exact
+Google Task READ**, in built-debug, not installed, `tasks auth login/status/logout`
+and `tasks observe`. Observe refreshes one saved grant, verifies fresh UserInfo and
+the handoff account, then uses the same bearer for the exact task GET. Its unsigned
+`google-task-live-observation` wrapper records collection provenance, not portable
+authentication or dispatch authority. Offline due-plan rejects the wrapper;
+explicit extraction of its nested observation remains operator asserted with
+`remoteVerified: false`. No task mutation, durable ACK, or hosted executor is added.
+
+**Fake-only executor milestone complete after review (2026-11-04):** built-debug,
+not installed, `tasks fake init/execute-first-due/recover/inspect` now exercise
+durable local intent, exact committed-source shared policy, conditional synthetic
+due-only mutation and frozen observation-only recovery. No JSON plan is executed.
+See the [dedicated usage/state-machine contract](docs/tasks-first-due-fake-executor.md).
+Fake success is not a Google ACK; all production/publication/push/remote/Hive-write
+proof flags remain false. Next: separately authorize a disposable-resource test
+proving actual Google Tasks PATCH rejects stale preconditions, then scoped production
+adapter and hosted intent/ACK/secrets/state/workflow integration. No live-write CLI
+or workflow is added now.
+
+**Inbound capture remains live and Google-read-only. No new consent, live Google
+operation, outbound workflow, or Tasks writes were run or activated.** The readonly
+`personal` and Calendar profiles remain untouched. Login/observe examples are
+activation-sensitive, not instructions to run now; local status/logout still access
+the secure store. A saved dirty note
+is not visible at a pinned commit; even a local commit does not prove a push.
+The pilot excludes create/delete, reschedule, due clearing, and completion.
+See [accepted design and staged activation gates](docs/google-tasks-writeback.md)
+for implemented CLI examples, separate local Tasks-write auth, and remaining
+hosted execution/recovery/cost/Linux gates. See the
+[current targeted validation](docs/release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04);
+no new tests ran for this documentation update.
+
 ## What is in this repo
 
 ```text
 hive-mind/
   crates/hive          CLI entrypoint: `hive`
   crates/hive-capture  desktop-local Google Tasks inbound queue and mw delivery
+  crates/hive-tasks    shared first-due policy and local fake-only durable executor
   crates/hive-calendar local Calendar planning/persistence and a dormant private HTTP adapter
   crates/hive-background bounded worker, editor coordination, and owned macOS LaunchAgent
   crates/hive-google-auth desktop Google OAuth, refresh, and native macOS Keychain storage
@@ -103,6 +155,12 @@ This lane does not use or change legacy LWW sync/PWA transport and
 does not require a hosted server or Postgres before first personal use.
 
 ## Calendar source preview (local only)
+
+> **Superseded target / deferred as of 2026-11-03.** All Calendar sections through
+> the private coordinator below retain historical capabilities and evidence only.
+> Their remaining gates are not the current next slice; use the
+> [Google Tasks writeback plan](docs/google-tasks-writeback.md) instead. Calendar
+> publication and Calendar authorization remain unactivated.
 
 `hive-calendar` and the built-debug CLI implement a credential-free, source-only
 preview. The separate ledger-relative planner below is also implemented; neither
@@ -805,6 +863,8 @@ current operator guidance.
 ## Documentation
 
 - `docs/google-tasks-capture.md` — implemented local inbound lane and live activation gates
+- `docs/google-tasks-writeback.md` — accepted same-task first-due design and staged activation gates
+- `docs/tasks-first-due-fake-executor.md` — synthetic fixture, built-debug usage, recovery and guarantees/limits
 - `docs/google-auth.md` — Desktop OAuth setup, saved connections, refresh, and troubleshooting
 - `docs/architecture.md` — architecture and component boundaries
 - `docs/product-architecture-roadmap.md` — product architecture needed for real
