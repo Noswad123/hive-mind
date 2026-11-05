@@ -137,6 +137,7 @@ pub(crate) fn git(repo: &Path, args: &[&str], input: &[u8]) -> Result<String> {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_AUTHOR_NAME", "Hive Fake")
         .env("GIT_AUTHOR_EMAIL", "fake@invalid")
@@ -185,7 +186,12 @@ pub(crate) fn git(repo: &Path, args: &[&str], input: &[u8]) -> Result<String> {
     Ok(text.trim_end().into())
 }
 
+#[cfg(test)]
 pub(crate) fn check_repo(repo: &Path) -> Result<String> {
+    check_repo_ref(repo, STATE_REF)
+}
+
+pub(crate) fn check_repo_ref(repo: &Path, state_ref: &str) -> Result<String> {
     path(repo, true)?;
     ensure!(
         git(repo, &["rev-parse", "--is-bare-repository"], b"")? == "true",
@@ -201,8 +207,8 @@ pub(crate) fn check_repo(repo: &Path) -> Result<String> {
         "foreign object storage"
     );
     let refs = git(repo, &["for-each-ref", "--format=%(refname)"], b"")?;
-    ensure!(refs == STATE_REF, "foreign or missing state ref");
-    let oid = git(repo, &["rev-parse", "--verify", STATE_REF], b"")?;
+    ensure!(refs == state_ref, "foreign or missing state ref");
+    let oid = git(repo, &["rev-parse", "--verify", state_ref], b"")?;
     ensure!(
         oid.len() == 40 && oid.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid state ref"
@@ -211,7 +217,11 @@ pub(crate) fn check_repo(repo: &Path) -> Result<String> {
 }
 
 pub(crate) fn load<T: DeserializeOwned>(repo: &Path) -> Result<(String, T)> {
-    let oid = check_repo(repo)?;
+    load_ref(repo, STATE_REF)
+}
+
+pub(crate) fn load_ref<T: DeserializeOwned>(repo: &Path, state_ref: &str) -> Result<(String, T)> {
+    let oid = check_repo_ref(repo, state_ref)?;
     let bytes = git(
         repo,
         &["cat-file", "blob", &format!("{oid}:state.json")],
@@ -223,10 +233,20 @@ pub(crate) fn load<T: DeserializeOwned>(repo: &Path) -> Result<(String, T)> {
 // Wait for sync-configured object writes and the exact-ref CAS before returning.
 // Directory/host-crash durability is not proven; recovery remains process-crash-only.
 pub(crate) fn save<T: Serialize>(repo: &Path, old: Option<&str>, value: &T) -> Result<String> {
+    save_ref(repo, STATE_REF, old, value)
+}
+
+pub(crate) fn save_ref<T: Serialize>(
+    repo: &Path,
+    state_ref: &str,
+    old: Option<&str>,
+    value: &T,
+) -> Result<String> {
     if let Some(old) = old {
-        ensure!(check_repo(repo)? == old, "stale state CAS");
+        ensure!(check_repo_ref(repo, state_ref)? == old, "stale state CAS");
     }
     let bytes = serde_json::to_vec(value)?;
+    ensure!(bytes.len() <= LIMIT, "state size limit");
     let blob = git(repo, &["hash-object", "-w", "--stdin"], &bytes)?;
     let tree = git(
         repo,
@@ -237,12 +257,17 @@ pub(crate) fn save<T: Serialize>(repo: &Path, old: Option<&str>, value: &T) -> R
     if let Some(old) = old {
         args.extend(["-p", old]);
     }
-    let commit = git(repo, &args, b"fake-only state\n")?;
+    let message: &[u8] = if state_ref == STATE_REF {
+        b"fake-only state\n"
+    } else {
+        b"publisher state\n"
+    };
+    let commit = git(repo, &args, message)?;
     git(
         repo,
         &[
             "update-ref",
-            STATE_REF,
+            state_ref,
             &commit,
             old.unwrap_or("0000000000000000000000000000000000000000"),
         ],

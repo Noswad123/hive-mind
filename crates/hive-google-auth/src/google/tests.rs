@@ -3,6 +3,75 @@ use std::{io::Write, net::TcpListener, sync::mpsc, thread};
 
 const GOOD: &str = r#"{"access_token":"access-canary","token_type":"Bearer","expires_in":3600,"refresh_token":"refresh-canary","scope":"openid https://www.googleapis.com/auth/tasks.readonly","id_token":"unverified.not.identity"}"#;
 
+#[test]
+fn reduced_request_budget_preserves_defaults_fixed_endpoints_and_never_extends_deadline() {
+    let original = GoogleOAuth::new().unwrap();
+    assert_eq!(original.timeout, Duration::from_secs(30));
+    assert!(original.request_deadline.is_none());
+    assert!(matches!(
+        original.with_request_timeout(Duration::ZERO),
+        Err(AuthError::Timeout)
+    ));
+    let reduced = original
+        .with_request_timeout(Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(reduced.token_endpoint, TOKEN_ENDPOINT);
+    assert_eq!(reduced.identity_endpoint, IDENTITY_ENDPOINT);
+    assert_eq!(reduced.timeout, Duration::from_secs(2));
+    let extended = reduced
+        .with_request_timeout(Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(extended.request_deadline, reduced.request_deadline);
+    assert!(extended.request_timeout().unwrap() <= Duration::from_secs(2));
+    assert_eq!(original.request_timeout().unwrap(), Duration::from_secs(30));
+}
+
+#[test]
+fn expired_reduced_request_budget_starts_no_refresh_or_userinfo_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/endpoint", listener.local_addr().unwrap());
+    let mut oauth = GoogleOAuth::local(&endpoint, &endpoint, Duration::from_secs(2));
+    oauth.request_deadline = Some(Instant::now() - Duration::from_secs(1));
+    let token = SecretString::new("access-canary").unwrap();
+    assert!(matches!(
+        oauth.refresh(&client(false), &token),
+        Err(AuthError::Timeout)
+    ));
+    assert!(matches!(oauth.identity(&token), Err(AuthError::Timeout)));
+    assert!(listener.accept().is_err());
+}
+
+#[test]
+fn reduced_timeout_applies_to_refresh_and_userinfo_over_real_loopback_http() {
+    for refresh in [false, true] {
+        let body = if refresh {
+            GOOD
+        } else {
+            r#"{"sub":"fixture"}"#
+        };
+        let (original, request, handle) = mock("200 OK", body, "", Duration::from_millis(120));
+        let reduced = original
+            .with_request_timeout(Duration::from_millis(50))
+            .unwrap();
+        let token = SecretString::new("access-canary").unwrap();
+        let result = if refresh {
+            reduced.refresh(&client(false), &token).map(|_| ())
+        } else {
+            reduced.identity(&token).map(|_| ())
+        };
+        assert!(matches!(result, Err(AuthError::Timeout)));
+        assert!(
+            request
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .contains("/endpoint")
+        );
+        handle.join().unwrap();
+        assert!(original.request_deadline.is_none());
+    }
+}
+
 fn client(secret: bool) -> ClientConfig {
     ClientConfig {
         client_id: "123-desktop.apps.googleusercontent.com".into(),

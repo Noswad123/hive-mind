@@ -22,7 +22,8 @@ repository `main` → GitHub-hosted workflow reads the exact pushed commit → u
 the SAME existing Google Task (pilot due only). Not a Calendar event. Calendar is
 deferred; its historical milestones and checklist below are retained, not removed
 code or current activation instructions. Inbound capture stays live and
-Google-read-only. No outbound workflow/auth/Tasks writes are activated.
+Google-read-only. Production/hosted writeback remains disabled; separately
+authorized disposable-task live conditional proof succeeded Nov 4 (not activation).
 
 Current checklist (local code/review milestone done; outbound activation not done):
 
@@ -42,8 +43,9 @@ Current checklist (local code/review milestone done; outbound activation not don
       Record supplied implementation validation, not tests rerun for docs.
 - [x] Implement/review separate local TasksWrite (`https://www.googleapis.com/auth/tasks`
       + `openid`) auth login/status/logout, isolated Keychain service/locks, without
-      changing `personal` readonly or Calendar. Built-debug, not installed; no consent
-      or native credential operation run. Local isolation is not Google grant isolation.
+      changing `personal` readonly or Calendar. Built-debug, not installed; explicit
+      browser approval subsequently saved `tasks-write-personal`. Local isolation
+      is not Google grant isolation; readonly lists succeeded after login/test.
 - [x] Implement handoff-bound exact authenticated READ: input preflight before native
       setup, one refresh/fresh UserInfo, handoff namespace match, same-token exact GET.
       Unsigned live wrapper is collection provenance only; offline due-plan rejects
@@ -55,34 +57,91 @@ Current checklist (local code/review milestone done; outbound activation not don
       frozen recovery that never PATCHes. Local process-crash proof only, not Google
       ACK, hosted coordination or production readiness. See
       [usage, fixture and state machine](docs/tasks-first-due-fake-executor.md).
-- [ ] **Next gate:** separately authorize a disposable-resource live Google Tasks
-      conditional PATCH test proving stale preconditions are rejected, not ignored.
-      Fake revisions and Calendar etags do not establish Tasks behavior.
-- [ ] Review hosted secrets/refresh-token rotation, serialization and failed-save
-      recovery; native MacKeychain is local only, not hosted Linux storage.
-- [ ] Verify live exact-task behavior and conditional due-only PATCH semantics;
-      block meaningful changes/conflicting due/unsupported state. Equal due is not
-      proof of Hive mutation. No title matching, create/delete/reschedule/clear/completion.
-- [ ] Deliver scoped production adapter and production durable intent/ACK coordination
-      and uncertain-outcome recovery (fake-only milestone above is not production);
+- [x] Implement/review nondefault `tasks-conditional-probe` inspect/run and bounded
+      private journal; default builds exclude adapter/command. Separate experiment,
+      not a promotion of fake-only code or production workflow. See the
+      [runbook and approval contract](docs/tasks-conditional-probe.md).
+- [x] Obtain explicit live sign-in/read and date-change authorizations; test only
+      user-nominated `Hive conditional write test` in `My Tasks`. API baseline Nov 5;
+      current-ETag due-only PATCH Nov 6 accepted (200), stale-old-ETag PATCH back
+      rejected (412 valid Google JSON); final and independent read-only verification
+      retained Nov 6/new ETag/non-due fields. Two PATCHes, one accepted, no replay/
+      rollback/delete. Real `Verify scheduled phone capture` and notes not edited.
+- [x] Fix normal output-only `links: []` compatibility after GET-only inspect refusal;
+      accept empty arrays only, retain malformed/nonempty/unknown-field refusal.
+- [x] Implement/review immutable injected TasksWrite backend: existing strict native
+      V1 codec, alias/account pins, process-instance lock only; every save fails with
+      CredentialPersistenceRequired. Omitted/identical refresh token proceeds;
+      rotation pauses before UserInfo/token release/GET. No secret-update API.
+- [ ] Approve trusted hosted provisioning and manual credential pause/recovery;
+      the old secret may be spent on rotation. No credentials in state Git.
+- [x] Record limited single-target/session live exact-task conditional PATCH evidence,
+      not a universal provider guarantee or production canonical ACK.
+- [x] Implement/review real default-enabled local single-target `tasks publish`:
+      separate bare fixed-ref Git state, reviewed intent/source/resource checks,
+      Prepared/Attempting CAS, one conditional due-only PATCH, persisted response
+      proof before confirmation and durable ACK, source-independent GET-only recovery.
+      **Implemented/reviewed with validation limits, not ready for live activation**;
+      no installation or live publisher operation this step. See the
+      [runbook](docs/tasks-local-publisher.md) and
+      [validation checkpoint](docs/release.md#tasks-local-publisher-checkpoint-2026-11-04).
+- [x] Reconcile independent final validation: default-parallel task-crate **45 passed**,
+      default CLI **25 passed / 1 ignored**, feature Tasks unit **41 passed** and
+      publisher/probe CLI **4 passed**. Full workspace not rerun.
+- [ ] Diagnose earlier intermittent failures/timeouts; one passing default-parallel
+      rerun does not establish stability or explain their cause.
+- [x] Implement/review default `tasks hosted check/plan`: consistent push-claim
+      admission (not GitHub authentication), full committed-source policy and exact
+      private parser-copy pin before execution/content reads, late secret lookup,
+      structure-only offline check or fresh refresh/UserInfo/exact GET planning.
+      Redacted summary only; no apply, state commit, adoption or native fallback.
+      See [foundation contract](docs/tasks-hosted-foundation.md).
+- [x] Record the foundation's final targeted validation in its
+      [historical checkpoint](docs/release.md#tasks-hosted-read-only-foundation-checkpoint-2026-11-04);
+      not a full-workspace, stability or Linux pass.
+- [x] Implement/review read-only `tasks hosted verify-main`: existing claims/source/
+      private-copy-pin preflight before late `GITHUB_TOKEN` only; fixed private
+      GitHub identity/exact-main GETs. Collection observation, not push authentication
+      or dispatch authority. No live token read/GitHub calls this step.
+- [x] Review remote expected-OLD Git push CAS and integrated intent/Attempting/
+      evidence/ACK/recovery protocol **entirely under cfg(test)**. No remaining
+      P1/P2 in reviewed laboratory scope; temporary local bare receive-pack and
+      synthetic HTTP only. See [protocol/limits](docs/tasks-remote-coordination.md).
+- [ ] Reconcile final remote full task-crate/probe/feature CLI/Clippy runs: PENDING
+      coordinator final report; [completed targeted evidence](docs/release.md#tasks-remote-authority-checkpoint-2026-11-04)
+      is not final full-suite/workspace or stability proof.
+- [ ] **Next:** production GitHub HTTPS credential bridge with secret-free URL/argv/
+      config/logs and process isolation; reviewed inception/independent root pin and
+      quiescent local-to-hosted handoff; production coordinator construction and
+      hosted writer wiring with credential pause/recovery. These code bridges are
+      absent, not merely deployment tasks. Local permits/locks are not fencing.
+- [ ] Complete hosted production coordination and inbound ACK integration;
       retain inbound receipts/review, including future own-write `provider_changed`,
       until explicit outbound ACK integration exists.
 - [ ] Deliver serialized trusted-main workflow with immutable pushed SHA/freshness,
       durable state, included-allowance paid-overage hard stop, and Linux validation
       before deployment. Linux validation remains deferred now.
-- [ ] Obtain separate activation approvals before real grants/secrets/state,
-      workflow deployment, or provider writes. No workflow is added in this slice.
+- [ ] Obtain separate production activation approvals for hosted grants/secrets/state,
+      workflow deployment and selected first-due writes; disposable-probe approvals
+      do not authorize them. No workflow is added in this slice.
 
-See [implemented local interfaces and activation boundaries](docs/google-tasks-writeback.md)
-and the [current fake-executor checkpoint](docs/release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04):
+See [implemented local interfaces and activation boundaries](docs/google-tasks-writeback.md),
+the [new local publisher validation limits](docs/release.md#tasks-local-publisher-checkpoint-2026-11-04),
+and the [live proof/post-fix checkpoint](docs/release.md#live-tasks-conditional-proof-2026-11-04).
+The earlier [fake-executor checkpoint](docs/release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04) records:
 final hive-tasks **21 passed**, independently confirmed; CLI Tasks **22 passed / 1
 ignored**, Tasks unit **5 passed**. Repeated runs are not additional distinct tests.
 The earlier auth/read **242 passed / 9 ignored** remains its own historical checkpoint. No latest
 full-workspace green claim: it was not rerun this milestone. The earlier intermediate
 486/14 serial pass and later unresolved/unconfirmed-cause Calendar loopback failures
 remain [historical evidence](docs/release.md#google-tasks-local-first-due-checkpoint-2026-11-03).
-No new consent, Google operations, commit/push/install/workflow or real-state changes;
-this documentation update runs no tests or shell/native calls.
+Post-fix independent validation: capture **69 passed / 2 ignored**, probe unit
+**36 passed**, Tasks integration **22 passed / 1 ignored**, probe CLI **2 passed**;
+strict capture/feature CLI Clippy (existing CLI allowances), fmt/diff checks passed.
+Prior auth **71 passed** was not rerun in the live session. The new credential
+profile was intentionally saved and the disposable task left open Nov 6; worker,
+queue/baseline, canonical notes, source refs and workflows were unchanged by the
+probe work. No code commit/push/install; this docs pass runs no tests or shell/native calls.
 
 ## Implemented capabilities
 

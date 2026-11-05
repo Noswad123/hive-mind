@@ -2,7 +2,13 @@
 
 ## Overview
 
-**Reviewed fake-only executor milestone complete — 2026-11-04; not activated.** The
+**Real local publisher implemented/reviewed with validation limits — 2026-11-04;
+not ready for live activation.** The retained fake executor stays fake-only; the
+separate default-enabled [local publisher](tasks-local-publisher.md) now implements
+real due-only dispatch and Git-backed recovery. No live publisher/native/provider
+operations ran this step; no installation/handoff export or notes changes occurred.
+Prior disposable live proof and saved TasksWrite credentials persist, but do not
+authorize applying to a canonical real task. The
 accepted eventual user flow is:
 
 ```text
@@ -15,16 +21,18 @@ Edit the canonical Markdown task
 Do not create a Calendar event. Calendar publication is deferred; existing
 Calendar implementation and evidence remain historical work, not removed code.
 The live Google Tasks inbound lane stays Google-read-only with its existing
-`personal` grant, queue, baseline, worker, and receipts. No outbound workflow,
-Tasks-write auth, or provider writes are activated.
+`personal` grant, queue, baseline, worker, and receipts. A separate TasksWrite grant
+was intentionally saved and a disposable task tested after explicit approvals;
+no production/hosted outbound workflow is activated.
 
 The earlier milestone provides **credential/provider-free local advice** in the
 **built-debug, not installed** `./target/debug/hive tasks handoff` and `tasks due-plan`:
 portable receipt-backed selected capture identity handoff and exact committed-source
 first-due planning. The new built-debug `tasks auth` and `tasks observe` add a
 separate local TasksWrite profile and authenticated, handoff-bound exact-task READ,
-not mutation, ACK, or a hosted executor. No new consent or live Google operations
-were run. Validation below was independently run during implementation, not rerun
+not mutation, ACK, or a hosted executor. At that earlier milestone no new consent
+or live operations ran; the subsequent probe session is recorded below.
+Validation was independently run during implementation, not rerun
 for this documentation update.
 
 The subsequent **local fake-only executor** now persists intent, conditionally
@@ -34,6 +42,22 @@ executes plan JSON. It adds no Google mutation or ACK, production dispatch trait
 HTTP PATCH, hosted coordinator or live-write CLI. See the dedicated
 [usage, fixture, state machine and guarantees/limits](tasks-first-due-fake-executor.md)
 and [new validation checkpoint](release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04).
+
+**Separate opt-in probe has limited live validation (2026-11-04).**
+The nondefault `tasks-conditional-probe` feature adds disposable-task inspect/run;
+default builds exclude command and adapter. It is not the production writer and
+does not change the fake-only executor. See the [compact runbook, exact interface,
+journal and separate approvals](tasks-conditional-probe.md). After explicit login
+and date-change approvals, `tasks-write-personal` saved `tasks` + `openid` and the
+user-nominated disposable task accepted current-ETag Nov 5→Nov 6 PATCH (200), then
+rejected stale-old-ETag PATCH back (412 valid Google JSON). Final and independent
+read-only verification retained Nov 6/new ETag/non-due fields. Two PATCHes attempted,
+one accepted; no replay/rollback/delete. The task remains open Nov 6. This is
+single-target/session evidence, not a universal guarantee or production canonical
+ACK. Readonly `personal` lists succeeded after login and after the test. Probe work
+did not edit the real phone capture, canonical notes, worker, queue/baseline, source
+refs or workflows; no code commit/push/install. See the
+[live checkpoint and post-fix validation](release.md#live-tasks-conditional-proof-2026-11-04).
 
 ## API / Interfaces
 
@@ -148,6 +172,17 @@ but that input remains operator asserted and the plan's `remoteVerified` remains
 false. Neither file possession, digest nor timestamp establishes authenticity,
 freshness at later use, dispatch rights, or proof Hive wrote a due date.
 
+### Local publisher
+
+Default-enabled, built-debug, not installed `tasks publish init/inspect/prepare/apply/recover`
+uses a separate dedicated bare fixed-ref Git installation, not executable plan JSON
+or hosted authority. Init/inspect are local with no auth/Google; prepare authenticates
+an exact GET and freezes local state; explicit reviewed apply can send one due-only
+conditional PATCH; recovery is source-independent and GET-only when needed. See
+the [exact flags, side effects, state machine and limits](tasks-local-publisher.md).
+Local main-tip checks are not GitHub pushed-main authorization. No local-pilot
+operation is approved by these examples or the earlier disposable-task consent.
+
 ### Provider payload boundary
 
 Use Google Tasks' date-only due semantics, encoded as an RFC3339 value such as
@@ -174,8 +209,9 @@ existing different due, date clear, title/notes update, or completion in this pi
    exact bound account/list/task. Compare the fresh state with the reviewed basis;
    block conflicting due, meaningful remote changes, or unsupported state.
 5. Persist a frozen durable intent before dispatch. Verify the Tasks API's actual
-   conditional PATCH support/semantics and conflict behavior, then send only `due`
-   with the validated precondition to that same task. Do not assume Calendar
+    conditional PATCH support/semantics and conflict behavior in the production
+    adapter, retaining the narrow checks with limited live probe evidence, then send
+    only `due` with the validated precondition to that same task. Do not assume Calendar
    adapter tests prove Tasks concurrency behavior.
 6. Validate the response and durably acknowledge the outcome. Recover uncertain
    dispatch or acknowledgement using retained intent and exact-task observations,
@@ -199,6 +235,7 @@ existing different due, date clear, title/notes update, or completion in this pi
   write acknowledgement. Operator-supplied observations remain unverified.
 - Known provider metadata `kind`, `selfLink`, `webViewLink`, and `position` is shape-validated
   and treated as nonsemantic alongside `etag`/`updated` for baseline comparison.
+  Output-only `links: []` is supported; malformed/nonempty links still refuse.
   `selfLink` is never followed or used as identity. Unknown provider fields require
   review; meaningful baseline changes, completion and unsupported task shapes block.
 - Invalid observe input fails before native setup. Missing/logged-out/wrong-profile,
@@ -244,8 +281,9 @@ commands. Source reading inherits Git 2.50+ at `/usr/bin/git` and a trusted stan
 `mw` supporting `todos snapshot --json`, isolated from original notes/config/DB.
 This is input isolation, not an OS sandbox for hostile binaries.
 
-**Activation-sensitive auth/observe examples — NOT executed and NOT instructions
-to run now.** Login opens browser consent and can persist a separate local grant;
+**Activation-sensitive auth/observe examples — not instructions to run now.**
+These placeholders were not executed by this docs pass; separate authorized live
+login occurred in the probe session. Login opens browser consent and can persist a separate local grant;
 observe refreshes credentials and contacts Google. Status/logout involve the local
 secure store (possibly OS prompts), with no live Google requests; logout removes
 the local grant only, not Google's grant or an in-flight bearer. All use the
@@ -274,8 +312,10 @@ grant and cannot follow logout without separate explicit reauthorization).
    separate Keychain/locks, fake lifecycle and loopback tests, handoff-bound
    refresh/UserInfo/same-token exact GET, and unsigned observation boundary. See the
    [current targeted checkpoint](release.md#google-tasks-auth-and-exact-read-checkpoint-2026-11-04).
-   No live consent/observe or grant installation was performed. Local isolation does
-   not isolate Google grants; leave `personal` readonly and Calendar untouched.
+   No live consent/observe or grant installation was performed at that earlier
+   code-only checkpoint; subsequent authorized probe login saved the separate grant.
+   Local isolation does not isolate Google grants; leave `personal` readonly and
+   Calendar untouched.
    Hosted secret storage, rotation/serialization, failed-save recovery and
    reauthorization remain gates; MacKeychain is local only, not a Linux backend.
 3. **Done — reviewed fake-only executor:** explicit dedicated bare local state and
@@ -284,14 +324,48 @@ grant and cannot follow logout without separate explicit reauthorization).
    frozen observation-only recovery. Uncertain/conflict blocks; matching due has
    UNKNOWN causality. Repeated unchanged recovery adds no commit. No production
    readiness or Google conditional-write proof; process-crash-only, not hosted fencing.
-4. **NEXT provider gate:** obtain separate authorization for a disposable-resource
-   live Google Tasks conditional due-only PATCH test, including proof stale
-   preconditions are actually rejected rather than ignored. Fake revisions and
-   Calendar etags do not prove this. Exact GET code is not live-provider validation;
-   the broad scope still needs narrow executor policy. No Google mutation exists.
-5. **Production durability gate:** implement a scoped production adapter and durable
-   intent/ACK coordination, dispatch authority,
-   uncertain-outcome ACK/recovery and authoritative state coordination. Do not use
+4. **Done — limited live provider evidence:** the separate nondefault
+   [conditional-probe experiment](tasks-conditional-probe.md) succeeded after
+   explicit approvals on one already-dated disposable target. Current-E0 due-only
+   D0→D1 returned 200/new E1; stale-E0 attempt back returned valid Google JSON 412;
+   final and independent GETs retained D1/E1/non-due fields. Maximum two PATCHes,
+   no retry/restore. The initial GET-only refusal led to the narrow `links: []`
+   compatibility fix, not relaxed unknown/nonempty-field acceptance. This is
+   empirical single-session evidence, not universal guarantees or production
+   authority. The broad scope still needs narrow production executor policy.
+5. **Implemented/reviewed — local publisher, with validation limits:** default-enabled
+   [single-target publisher](tasks-local-publisher.md), separate bare Git intent/state,
+   reviewed full-resource/source checks, Prepared/Attempting CAS before one due-only
+   PATCH, validated response persisted before confirmation/ACK, frozen GET-only
+    recovery. No live activation; the prior independent 45-test default-parallel pass
+    does not establish stability or explain earlier failures/timeouts. See the
+   [checkpoint](release.md#tasks-local-publisher-checkpoint-2026-11-04).
+    **Done — hosted read-only foundation, not execution:** default
+    [`tasks hosted check/plan`](tasks-hosted-foundation.md), immutable injected strict
+    V1 TasksWrite record and alias/account pins; exact private parser-copy comparison
+    before execution/source-content reads; consistent push claims and shared source
+    policy before late secret lookup. Check has no HTTP/native calls; plan uses one
+    refresh/fresh UserInfo/exact GET and returns only redacted flags/decision. Claims
+    are spoofable, not GitHub authentication or remote-main proof. Rotation requiring
+    save fails before UserInfo/token release/GET as `auth_action_required`; manual
+    separately authorized provisioning is needed, with no secret-update API. No
+    hosted apply/PATCH/state commit/native fallback or workflow was added.
+    **Current update — remote-authority milestone (Nov 4):** the ONLY new production
+    interface is read-only `tasks hosted verify-main`: same preflight then late
+    `GITHUB_TOKEN` only, fixed private GitHub identity/exact-main GETs. Fresh
+    production-origin flags are observations, not push authentication or dispatch;
+    check/plan are unchanged claims-only interfaces. Remote expected-OLD Git push
+    CAS and integrated coordinator are **entirely cfg(test)**, reviewed with no
+    remaining P1/P2 in laboratory scope, not normal-compiled production execution.
+    Temporary bare receive-pack/loopback tests cover creator-only fresh ACK permits,
+    persisted Prepared/Attempting, evidence-before-confirmation/ACK and frozen
+    no-replay recovery. See [protocol and limits](tasks-remote-coordination.md).
+    **NEXT — missing production code bridges:** GitHub HTTPS Git credential delivery
+    with secret-free URL/argv/config/logs isolation; reviewed inception/independent
+    root pin and quiescent local-to-hosted handoff; production coordinator constructor
+    and writer wiring with credential pause/recovery. No hosted writer command or
+    workflow deployment exists. Source/Git/Google are non-atomic; local permits/locks
+    are not fencing and reset/admin ABA is not solved. Do not use
    expiring caches/artifacts as authoritative state or sync live SQLite. Integrate
    outbound acknowledgements with inbound review explicitly, not by discarding it.
 6. **Hosted gate:** serialize `main` runs, pin exact pushed SHA and trusted artifact,
@@ -301,7 +375,7 @@ grant and cannot follow logout without separate explicit reauthorization).
    paid-overage hard stop; alerts alone are insufficient. No paid service by
    default. Validate pinned Linux runtime before deployment; Linux work remains
    deferred now, with no installs, VM or container probes requested.
-8. **Explicit activation gate:** separately approve real write consent, hosted
+8. **Explicit activation gate:** separately approve production grants as needed, hosted
    secrets/state/workflow deployment and one selected first-due live operation,
    then verify same-task identity and recovery/nonduplication before expansion.
    Design acceptance alone is not activation approval.
@@ -310,6 +384,10 @@ grant and cannot follow logout without separate explicit reauthorization).
 
 - [Inbound capture and retained receipts](google-tasks-capture.md)
 - [Fake-only executor usage, fixture, state machine and limits](tasks-first-due-fake-executor.md)
+- [Real local publisher: commands, side effects, review and frozen recovery](tasks-local-publisher.md)
+- [Hosted read-only foundation: exact interfaces, trust limits and credential pauses](tasks-hosted-foundation.md)
+- [Production current-main verifier and test-only remote coordination protocol/limits](tasks-remote-coordination.md)
+- [Separate opt-in conditional-probe runbook and approvals](tasks-conditional-probe.md)
 - [Readonly, local TasksWrite, and deferred Calendar authorization](google-auth.md)
 - [Current architecture priority and historical Calendar work](product-architecture-roadmap.md)
 - [Current checklist](../plan.md)

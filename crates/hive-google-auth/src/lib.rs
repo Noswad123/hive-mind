@@ -1,5 +1,6 @@
 //! Desktop Google credentials: no plaintext fallback, implicit login, or secret CLI output.
 pub mod google;
+pub mod hosted;
 pub mod loopback;
 pub mod provider;
 pub mod storage;
@@ -117,6 +118,10 @@ pub enum AuthError {
     StorageUnavailable,
     #[error("stored Google connection is corrupt or unsupported")]
     StorageCorrupt,
+    #[error(
+        "Google credential update requires durable persistence; immutable credentials cannot be updated"
+    )]
+    CredentialPersistenceRequired,
     #[error("another Google credential operation is active; try again after it finishes")]
     Busy,
 }

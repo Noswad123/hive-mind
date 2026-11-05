@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+tasks-conditional-probe = ["dep:reqwest"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -23,6 +26,8 @@ hive-server = { path = "../hive-server" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

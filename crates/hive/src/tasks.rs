@@ -16,11 +16,34 @@ use std::{
 
 #[path = "tasks_fake.rs"]
 mod fake;
+#[path = "tasks_hosted.rs"]
+mod hosted;
 #[path = "tasks_observe.rs"]
 mod observe;
+#[cfg(feature = "tasks-conditional-probe")]
+#[path = "tasks_probe.rs"]
+mod probe;
+#[path = "tasks_publish.rs"]
+mod publish;
 
 #[derive(Debug, Subcommand)]
 pub enum TasksCommand {
+    /// Read-only hosted admission foundation. No apply or publication authority.
+    Hosted {
+        #[command(subcommand)]
+        command: hosted::HostedCommand,
+    },
+    /// Receipt-bound first-due publisher with durable local recovery.
+    Publish {
+        #[command(subcommand)]
+        command: publish::PublishCommand,
+    },
+    /// Opt-in disposable-task diagnostic, not a production writer.
+    #[cfg(feature = "tasks-conditional-probe")]
+    ConditionalProbe {
+        #[command(subcommand)]
+        command: Box<probe::ProbeCommand>,
+    },
     /// Explicit local synthetic executor. No Google writes, authentication or push.
     Fake {
         #[command(subcommand)]
@@ -102,6 +125,10 @@ pub async fn dispatch(operation: impl FnOnce() -> Result<()> + Send + 'static) -
 
 pub fn command(command: TasksCommand) -> Result<()> {
     let output = match command {
+        TasksCommand::Hosted { command } => hosted::command(command)?,
+        TasksCommand::Publish { command } => publish::command(command)?,
+        #[cfg(feature = "tasks-conditional-probe")]
+        TasksCommand::ConditionalProbe { command } => probe::command(*command)?,
         TasksCommand::Fake { command } => fake::command(command)?,
         TasksCommand::Auth { command } => {
             return crate::captures_auth::auth_command_for(

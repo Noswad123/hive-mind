@@ -6,9 +6,12 @@ milestone is implemented in **built-debug, not installed**
 `./target/debug/hive tasks handoff` / `tasks due-plan` and is
 credential/provider-free. Separate local **TasksWrite auth + handoff-bound exact
 READ is now implemented** as `tasks auth login/status/logout` and `tasks observe` in
-the built-debug, not installed binary. No new consent, live Google operation, task
-mutation, ACK, or hosted workflow was run or activated. The live `personal` capture
-grant remains Tasks-readonly, untouched.
+the built-debug, not installed binary. Subsequent explicit browser sign-in saved
+`tasks-write-personal` with `tasks` + `openid`; an authorized disposable-task probe
+provided limited live conditional-write evidence, not a production ACK or hosted
+activation. Existing `personal` capture remains Tasks-readonly; list access succeeded
+after login and again after testing. See the
+[live checkpoint](release.md#live-tasks-conditional-proof-2026-11-04).
 A separate, locally tested
 [Calendar auth profile](#separate-calendar-authorization-local-only) is available in
 the development build; it has not been live-authorized or connected to publication.
@@ -283,7 +286,8 @@ reruns no tests. The 270-test record above is unchanged.
 
 ## Separate Tasks-write authorization (local only)
 
-**Code/review milestone complete, 2026-11-04; not activated.** The built-debug, not
+**Code/review milestone complete; separate local login live-verified 2026-11-04,
+not production/hosted activation.** The built-debug, not
 installed `tasks auth login/status/logout` concretely selects
 `AuthProfile::TasksWrite`. The flow, provider and storage codec require exactly
 `https://www.googleapis.com/auth/tasks` plus `openid`; extra, mixed, duplicate and
@@ -329,8 +333,9 @@ and conflict checks. Operator observation JSON and matching due are not write
 authority or proof of a Hive mutation. No create/delete/reschedule/clear/completion
 is allowed in the pilot.
 
-Hosted secret storage and refresh-token rotation/recovery are remaining design
-and activation gates. macOS Keychain is not a Linux runner backend; do not put
+Trusted hosted provisioning and credential-pause recovery remain activation gates;
+the immutable backend below implements read-only injection, not durable rotation.
+macOS Keychain is not a Linux runner backend; do not put
 tokens/client secrets in notes, handoffs, source, logs, or artifacts. Review secure
 durable rotation, serialization and failed-save recovery before hosting credentials;
 do not assume Google and secret storage form one transaction. Separate local
@@ -338,10 +343,32 @@ profiles do not by themselves isolate Google-side consent/revocation lifecycles.
 No login, credential export/install, hosted secret changes, or provider writes are
 authorized by this documentation update.
 
+**Separate opt-in diagnostic (2026-11-04):** the reviewed nondefault
+[`tasks-conditional-probe`](tasks-conditional-probe.md) requires an already saved
+TasksWrite connection; it never creates/logs in a profile or reads a client file.
+Both inspect and run refresh and verify fresh UserInfo; rotation may persist under
+the existing profile lock before UserInfo. Inspect itself needs live-read approval;
+run needs separate exact-target/baseline/date approval for both mutations. Following
+explicit sign-in and date-change approvals, the user-nominated disposable task
+accepted current-ETag Nov 5→Nov 6 PATCH (200), rejected stale-old-ETag PATCH back
+(412 valid Google JSON), and retained Nov 6/new ETag on final and independent
+read-only verification. Two PATCHes, one accepted; no replay/rollback/delete.
+The task remains open Nov 6. This is limited single-target/session evidence, not
+universal provider guarantees or production canonical ACK. The new credential
+profile was intentionally saved; readonly lists succeeded after login and test.
+Worker, queue/baseline, real phone capture, canonical notes, source refs and workflows
+were not changed by the probe work. No code commit/push/install. Default builds
+exclude probe command/adapter; production/hosted writeback is still disabled.
+The additive `GoogleOAuth::with_request_timeout` API clones the fixed transport with
+a reduced nonzero timeout/deadline, never extends an existing deadline, and leaves
+ordinary 30-second behavior unchanged. The probe clamps each OAuth request to its
+remaining admission/network budget; this does not hard-bound native Keychain UI.
+
 ### TasksWrite example usage and read flow
 
-**Activation-sensitive login/observe examples: NOT executed, NOT instructions to
-run now.** Login can open consent and persist credentials; observe refreshes and
+**Activation-sensitive login/observe examples: not instructions to run now.** These
+placeholders were not executed by this docs pass; authorized live login is recorded
+above. Login can open consent and persist credentials; observe refreshes and
 contacts Google. Status/logout touch local secure storage only (possibly OS prompts),
 not Google. These are independent examples, not a sequence to run through logout:
 
@@ -368,10 +395,55 @@ of nested observation uses the old schema but remains operator asserted, with
 `remoteVerified: false`. Files, hashes and time provide no authenticity or dispatch
 right. See [full contract and limits](google-tasks-writeback.md#separate-auth-and-exact-task-observation).
 
-[Current independently run targeted validation](release.md#google-tasks-auth-and-exact-read-checkpoint-2026-11-04)
+[Earlier independently run auth/read validation](release.md#google-tasks-auth-and-exact-read-checkpoint-2026-11-04)
 uses fake credentials/provider and loopback fixtures, not live Keychain, browser,
-Google or user state. Native TasksWrite consent/storage and live observation remain
-unexercised. No PATCH, ACK or hosted workflow is activated.
+Google or user state. Native TasksWrite consent/storage and probe refresh/UserInfo
+have since been live-exercised; this does not claim a handoff-bound `tasks observe`
+run. Auth **71 passed** is prior feature-milestone evidence, not rerun in the live
+session. See [post-fix validation](release.md#live-tasks-conditional-proof-2026-11-04).
+Next are a scoped production due-only adapter, durable intent/outcome recovery and
+Git state with hosted credential/auth ownership coordination, then the notes-main
+push workflow. No production ACK or hosted workflow is activated.
+
+### Hosted immutable TasksWrite backend
+
+**Implemented/reviewed, not provisioned or activated.**
+`ImmutableTasksWriteStore::from_record_bytes(expected_connection,
+expected_account_namespace, bytes)` reuses the strict existing native V1 64 KiB
+codec, requires a live TasksWrite grant and independently trusted alias/account pins.
+The store itself performs no environment/file/native lookup. Its nonblocking mutex
+coordinates one store instance only, not processes/workflows. Every `save` always
+returns the new `AuthError::CredentialPersistenceRequired`.
+
+Existing `Authenticator` ordering means omitted/identical refresh tokens can proceed
+to fresh UserInfo. A different rotated token requires save and fails **before
+UserInfo, bearer release or task GET**. Hosted maps that error to
+`auth_action_required`; the original injected token may already be spent. Stop for
+manual, separately authorized reauthorization/provisioning, not an automatic retry
+or secret upload. No secrets API, credential-export API, runtime-mutability claim
+for GitHub secrets, or assumption that `GITHUB_TOKEN` can write secrets is added.
+State Git must never contain credentials.
+
+The default hosted check/plan CLI reads only `HIVE_HOSTED_TASKS_WRITE_RECORD`, late after
+claims/source-policy/private-parser-pin preflight. That new copy is `Zeroizing`,
+but the runner's original environment remains, including before late lookup.
+Isolation is not an OS sandbox or permission to execute untrusted code with secrets.
+Check validates structure only with no HTTP/native calls, not grant validity; plan
+uses refresh/fresh UserInfo/exact GET only. See the
+[full binding, source, claims and summary contract](tasks-hosted-foundation.md) and
+[current validation checkpoint](release.md#tasks-hosted-read-only-foundation-checkpoint-2026-11-04).
+No native credentials/client files, GitHub/provider calls or secret uploads were
+accessed for this documentation update.
+
+**Current remote-authority update (Nov 4):** `tasks hosted verify-main` instead reads
+only `GITHUB_TOKEN`, after the same claims/source-policy/private-copy-pin preflight;
+it never reads the Google record or invokes native auth. Fixed private repository
+identity/current-main GitHub GETs are read-only observations, not push authentication
+or write authority. No actual token read/live GitHub call occurred this step. The
+remote Git/coordinator laboratory is entirely `cfg(test)` and deliberately has no
+token/helper inheritance: production HTTPS Git write-credential delivery is still
+unimplemented, as are production bootstrap/handoff and writer construction. See
+[protocol and remaining code gates](tasks-remote-coordination.md).
 
 ## Separate Calendar authorization (local only)
 

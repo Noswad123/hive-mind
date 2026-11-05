@@ -65,6 +65,23 @@ pub fn read_committed_tasks(
     mw_bin: &Path,
 ) -> Result<CommittedTaskSnapshot> {
     let snapshot = crate::source::read_snapshot(repo, commit, mw_bin)?;
+    task_snapshot(snapshot)
+}
+
+/// Pin the exact private parser copy before execution or committed-content reads.
+/// Existing unpinned readers retain their original preview behavior.
+pub fn read_committed_tasks_pinned(
+    repo: &Path,
+    commit: &str,
+    mw_bin: &Path,
+    expected_parser_sha256: &str,
+) -> Result<CommittedTaskSnapshot> {
+    let snapshot =
+        crate::source::read_snapshot_pinned(repo, commit, mw_bin, expected_parser_sha256)?;
+    task_snapshot(snapshot)
+}
+
+fn task_snapshot(snapshot: crate::CommittedSnapshot) -> Result<CommittedTaskSnapshot> {
     let mut literal_metadata = BTreeMap::new();
     let mut metadata_bytes = 0usize;
     let checkbox = regex::Regex::new(r"^\s*(?:[-*+]|[0-9]+[.)])\s*\[[ xX]\](?:\s|$)")?;

@@ -419,7 +419,11 @@ fn encode_for(
     Ok(bytes.0)
 }
 
-fn decode_for(profile: AuthProfile, connection: &str, bytes: &[u8]) -> Result<StoredConnection> {
+pub(crate) fn decode_for(
+    profile: AuthProfile,
+    connection: &str,
+    bytes: &[u8],
+) -> Result<StoredConnection> {
     validate_connection(connection)?;
     if bytes.is_empty() || bytes.len() > MAX_RECORD {
         return Err(AuthError::StorageCorrupt);

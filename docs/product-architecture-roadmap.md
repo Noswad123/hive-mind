@@ -31,7 +31,9 @@ server, and mobile/web companion should remain owned by Hive.
 **Accepted 2026-11-03:** canonical Markdown edit → commit AND PUSH to private
 NOTES repository `main` → GitHub-hosted workflow reads that exact pushed commit →
 due-only update of the **same existing Google Task**, not a Calendar event.
-Calendar is deferred; no outbound workflow, write auth, or Tasks writes are active.
+Calendar is deferred; production/hosted writeback is not active. A separate saved
+TasksWrite profile and explicitly authorized disposable-task probe now have limited
+live evidence (Nov 4), not production activation.
 Live inbound capture remains Google-read-only and retains its queue and receipts.
 
 The credential/provider-free local milestone is implemented in **built-debug, not
@@ -53,8 +55,8 @@ write authority. Plan only `set_first_due`, `already_satisfied`, or `blocked`, w
 changes, ambiguous identity, and unsupported state block. Equal due is not proof
 Hive wrote it. No create/delete/reschedule/due-clear/completion in the pilot.
 
-**Local TasksWrite auth + exact READ code/review milestone complete (2026-11-04),
-not mutation or activation.** Built-debug, not installed `tasks auth
+**Local TasksWrite auth + exact READ code/review milestone complete (2026-11-04);
+subsequent authorized probe login saved `tasks-write-personal`.** Built-debug, not installed `tasks auth
 login/status/logout` and `tasks observe` use the separate exact `tasks` + `openid`
 profile, service `hive/google-tasks-write/v1` and `google-tasks-write-auth` locks.
 Readonly `personal` and Calendar profiles remain untouched. Local isolation does not
@@ -80,26 +82,72 @@ proof, not Google ACK, host-loss durability, distributed fencing or portable hos
 state. All production/readiness/proof flags remain false. See
 [fixture, usage, guarantees and state machine](tasks-first-due-fake-executor.md).
 
+**Real local publisher implemented/reviewed, with validation limits (Nov 4).**
+Default-enabled `tasks publish` adds separate bare fixed-ref state, installation
+binding, fresh account-bound exact GET, reviewed frozen intent and source replay,
+Attempting CAS before one conditional due-only PATCH, response evidence persisted
+before confirmation/durable ACK, and source-independent GET-only recovery. This is
+not activation, hosted dispatch authority, distributed fencing or push proof.
+No real installation/handoff export, notes or live publisher/native/provider
+operations occurred this step. Prior TasksWrite credentials persist. See
+[runbook](tasks-local-publisher.md) and
+[validation limits](release.md#tasks-local-publisher-checkpoint-2026-11-04).
+
 Priority checklist:
+
+**Hosted read-only foundation implemented/reviewed (Nov 4):** default `tasks hosted
+check/plan` now admits consistent runner/event claims, validates committed-source
+policy and the exact private parser copy before execution/content reads, and uses
+an immutable injected TasksWrite V1 record with alias/account pins. Check has no
+HTTP/native calls; plan refreshes, verifies fresh UserInfo and performs an exact GET.
+Rotation needing save pauses before UserInfo/token release/GET; no secret-update
+API exists. Claims remain spoofable, not GitHub auth or current remote-main proof.
+No hosted writer/state commit/workflow exists. See the
+[foundation contract](tasks-hosted-foundation.md) and
+[targeted evidence and remaining limits](release.md#tasks-hosted-read-only-foundation-checkpoint-2026-11-04).
 
 - [x] Portable selected handoff and committed-source advisory first-due planner.
 - [x] Separate local TasksWrite auth and handoff-bound authenticated exact READ;
       fake lifecycle/loopback/async dispatch regression coverage, not live activation.
 - [x] Reviewed local fake-only intent/dispatch/recovery and synthetic revision CAS;
       no production dispatch trait, HTTP Google PATCH or live constructor.
-- [ ] **Next:** separately authorize disposable-resource live validation that actual
-      Tasks conditional PATCH rejects stale preconditions rather than ignoring them;
-      neither fake revision checks nor Calendar etags are provider proof.
-- [ ] Hosted secure storage/rotation/serialization and failed-save recovery.
-- [ ] Live exact-task validation and conditional due-only PATCH/conflict semantics.
-- [ ] Scoped production adapter, durable intent/ACK coordination, dispatch authority,
-      uncertain-outcome recovery and inbound review integration.
+- [x] Separate nondefault `tasks-conditional-probe` diagnostic code/review, with
+      private bounded journal; default builds exclude adapter and command. This is
+      not a production adapter and leaves the fake-only executor fake.
+- [x] Separately authorized [live disposable-task probe](tasks-conditional-probe.md):
+      current-ETag due-only Nov 5→Nov 6 PATCH 200; stale-old-ETag PATCH back 412 with
+      valid Google error JSON; final and independent GETs retained Nov 6/new ETag
+      and non-due fields. Two PATCHes, one accepted, no replay/rollback/delete.
+      Real inbound pilot excluded. Limited one-target/session evidence, not a
+      universal provider guarantee, production canonical ACK or dispatch authority.
+- [x] Immutable injected hosted credential backend and fail-closed rotation pause.
+- [x] Default read-only hosted check/plan and pre-execution private parser pin.
+- [x] New production read-only `tasks hosted verify-main`: same preflight before
+      late `GITHUB_TOKEN` only, fixed private GitHub identity/exact-main GETs;
+      collection observation, not push authentication or dispatch authority.
+- [x] Remote Git expected-OLD CAS and integrated coordinator protocol reviewed with
+      no remaining P1/P2 **in the entirely cfg(test) laboratory scope**; temporary
+      local bare receive-pack and synthetic HTTP, not production writer wiring.
+      See [production/test-only boundary](tasks-remote-coordination.md).
+- [ ] Trusted provisioning and manual credential pause/recovery; no credentials in state Git.
+- [x] Real local single-target due-only adapter, Git intent/ACK and frozen recovery;
+      implemented/reviewed with validation limits, not ready for live activation.
+- [ ] Reconcile remote final task/probe/feature CLI/Clippy suites (coordinator report
+      pending); [targeted passes](release.md#tasks-remote-authority-checkpoint-2026-11-04)
+      are not long-run stability. Earlier intermittency remains unexplained.
+- [ ] **Next:** production GitHub HTTPS Git credential delivery with secret-free
+      URL/argv/config/logs isolation; reviewed inception/independent root pin and
+      quiescent local-to-hosted handoff; production coordinator constructor and
+      writer wiring with auth pause/recovery. No such production bridge exists yet.
+- [ ] Hosted dispatch/intent/ACK coordination and inbound review integration.
 - [ ] Serialized immutable pushed-main workflow/freshness, cost hard stop and later Linux validation.
 - [ ] Separate approvals for consent, provider operations, state/secrets/workflow deployment.
 
-Remaining gates include hosted secret/refresh-rotation design; live exact-task
-and conditional PATCH verification; durable intent,
-uncertain-outcome ACK/recovery; serialized trusted-main workflow with immutable SHA
+The Google If-Match gate now has **limited live evidence**, not zero evidence;
+production must preserve and validate the same request/conditional boundaries.
+Remaining gates include trusted hosted provisioning, production Git HTTPS credential
+delivery, inception/root pin/quiescent handoff and coordinator/writer integration
+with credential-pause recovery; serialized trusted-main workflow with immutable SHA
 and freshness checks; included-allowance hard stop; and Linux validation before
 deployment (deferred now). A local commit is not push proof and saved dirty notes
 are absent from the committed snapshot. See the
@@ -108,11 +156,14 @@ implemented examples, privacy, and inbound `provider_changed` interaction. Sourc
 [CLI/planner](../crates/hive/src/tasks.rs),
 [handoff contract](../crates/hive-capture/src/handoff.rs), and
 [integration tests](../crates/hive/tests/tasks.rs). See
-[current targeted validation](release.md#tasks-first-due-fake-executor-checkpoint-2026-11-04),
+[live proof and post-fix targeted validation](release.md#live-tasks-conditional-proof-2026-11-04),
 independently run in implementation, not rerun for this documentation update. No
 full workspace rerun/green claim this milestone; prior unresolved Calendar loopback
-history remains intact. No new consent, live Google operations, ACK, hosted workflow,
-commit/push/install or real-state changes.
+history remains intact. Consent saved a new profile and the probe left only the
+disposable task open Nov 6; readonly lists succeeded after login and after testing.
+No production ACK, hosted workflow, code commit/push/install, canonical-note,
+source-ref, worker or queue/baseline changes occurred in the probe work. This docs
+pass performs no commands or live operations.
 
 ## Accepted next slice: hosted Calendar publication after push
 

@@ -1,5 +1,10 @@
 //! Fixed-endpoint Google OAuth transport. Provider responses never become error messages.
-use std::{fs::OpenOptions, io::Read, path::Path, time::Duration};
+use std::{
+    fs::OpenOptions,
+    io::Read,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use reqwest::{blocking::Client, redirect::Policy};
 use serde::Deserialize;
@@ -17,6 +22,7 @@ const MAX_BYTES: u64 = 64 * 1024;
 pub struct GoogleOAuth {
     http: Client,
     timeout: Duration,
+    request_deadline: Option<Instant>,
     token_endpoint: String,
     identity_endpoint: String,
 }
@@ -26,9 +32,47 @@ impl GoogleOAuth {
         Ok(Self {
             http: Self::http(true, Duration::from_secs(30))?,
             timeout: Duration::from_secs(30),
+            request_deadline: None,
             token_endpoint: TOKEN_ENDPOINT.into(),
             identity_endpoint: IDENTITY_ENDPOINT.into(),
         })
+    }
+
+    /// Clone this fixed-endpoint transport with a reduced, nonzero request budget.
+    /// The budget starts at cloning and cannot extend an existing clone's deadline.
+    /// The original transport and its default 30-second behavior are unchanged.
+    pub fn with_request_timeout(&self, timeout: Duration) -> Result<Self> {
+        let timeout = timeout.min(self.timeout);
+        if timeout.is_zero() {
+            return Err(AuthError::Timeout);
+        }
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(AuthError::Timeout)?;
+        Ok(Self {
+            http: self.http.clone(),
+            timeout,
+            request_deadline: Some(
+                self.request_deadline
+                    .map_or(deadline, |old| old.min(deadline)),
+            ),
+            token_endpoint: self.token_endpoint.clone(),
+            identity_endpoint: self.identity_endpoint.clone(),
+        })
+    }
+
+    fn request_timeout(&self) -> Result<Duration> {
+        let timeout = match self.request_deadline {
+            Some(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(AuthError::Timeout)?
+                .min(self.timeout),
+            None => self.timeout,
+        };
+        if timeout.is_zero() {
+            return Err(AuthError::Timeout);
+        }
+        Ok(timeout)
     }
 
     fn http(https_only: bool, timeout: Duration) -> Result<Client> {
@@ -56,8 +100,8 @@ impl GoogleOAuth {
         let response = self
             .http
             .post(&self.token_endpoint)
-            .timeout(self.timeout)
             .form(&form)
+            .timeout(self.request_timeout()?)
             .send()
             .map_err(transport_error)?;
         let status = response.status();
@@ -144,6 +188,7 @@ impl GoogleOAuth {
         Self {
             http: Self::http(false, timeout).unwrap(),
             timeout,
+            request_deadline: None,
             token_endpoint: token.into(),
             identity_endpoint: identity.into(),
         }
@@ -178,8 +223,8 @@ impl OAuthTransport for GoogleOAuth {
         let response = self
             .http
             .get(&self.identity_endpoint)
-            .timeout(self.timeout)
             .bearer_auth(access_token.expose())
+            .timeout(self.request_timeout()?)
             .send()
             .map_err(transport_error)?;
         let status = response.status();

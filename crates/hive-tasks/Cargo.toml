@@ -8,6 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 hive-calendar = { path = "../hive-calendar" }
 hive-capture = { path = "../hive-capture" }
+hive-google-auth = { path = "../hive-google-auth" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -16,6 +18,7 @@ time.workspace = true
 libc.workspace = true
 getrandom.workspace = true
 tempfile.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 hive-core = { path = "../hive-core" }

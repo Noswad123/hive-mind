@@ -1,5 +1,326 @@
 # Hive Release and Packaging
 
+## Tasks remote-authority checkpoint: 2026-11-04
+
+**Code reviewed with no remaining P1/P2 in scope; not production writeback.** The
+ONLY new normal-build interface is read-only `tasks hosted verify-main`: existing
+binding/claims/source/private parser-copy preflight before late `GITHUB_TOKEN`
+only (never the Google record), then fixed private GitHub repository identity and
+exact current-main GETs. Fresh production-origin verification flags are collection
+observations, not original push authentication, persisted authority or dispatch.
+Check/plan remain claims-only. See [exact interfaces/protocol/limits](tasks-remote-coordination.md).
+
+The remote Git transport and integrated coordinator are **entirely cfg(test)**,
+absent from normal compilation. Real push/receive-pack to temporary local bare
+repositories uses explicit expected-OLD force-with-lease and fresh exact porcelain
+ACK receipts, never ordinary FF/REST `force:false` or readback-as-authority.
+Synthetic HTTP tests integrate frozen intent, Attempting ownership before due-only
+If-Match PATCH, evidence-before-confirmation/ACK and no-replay recovery. Lost ACKs
+are unknown; unchanged recovery neither takes over nor revokes a paused creator.
+External origin floors prevent synthetic artifacts becoming Google authority.
+Race coverage uses independent workers/staging/Git processes, **not independent
+coordinator OS processes**. Source/Git/Google remain non-atomic; cooperative admin
+assumptions do not solve reset/ABA, lease expiry/takeover or distributed fencing.
+
+### Completed targeted validation and remaining limits
+
+Supplied independent validation, **not executed by this documentation pass**:
+
+- Coordinator's own `cargo test --locked --offline -p hive-tasks hosted -- --test-threads=8`:
+  **34 passed** (12 previous foundation + 22 remote/coordinator including verifier).
+- Reviewer complete hosted serial **34 passed**, local publisher **24 passed**,
+  filtered `tasks::probe::tests` **35 passed**, shared pinned-source regression
+  **1 passed**. Earlier reviewer failures before timeout later passed individually
+  and serially; cause remains unexplained, with no host-load attribution.
+- The 35-test probe filter excludes sibling
+  `tasks::probe::journal::tests::flow_deadline_prevents_request`; complete
+  `tasks::probe::` scope is **36**, not a deleted/consolidated test. Author explicitly
+  ran the excluded test: **1 passed**, and reported concurrency-8/16 passes.
+- Independent default hosted CLI **2**, publisher CLI **2**, default probe-exclusion
+  **1 passed**.
+- Final independent default-parallel full `hive-tasks` run: **79 passed** (57 prior
+  + 22 new) in **154.48s**. Complete `tasks::probe::` scope: **36 passed**.
+  Feature hosted/publisher/probe CLI suites: **6 passed**.
+- Final independent strict task-crate Clippy and feature CLI Clippy passed, the
+  latter with only the existing `too_many_arguments` / `needless_lifetimes`
+  allowances. No `collapsible_if` allowance was needed with `--no-deps`.
+  Formatting and diff checks passed.
+
+These targeted green results are not long-run stability or full-workspace proof.
+Prior Calendar issues and intermittent publisher failures are not claimed fixed.
+Most source is unchanged except private publisher validation helpers/resource reuse;
+existing probe tests still passed in the reported filter. Older checkpoints below
+retain their historical scope; current updates do not rewrite their claims.
+
+No actual `GITHUB_TOKEN` read or live GitHub calls this step; HTTP evidence is
+synthetic loopback only. Earlier authorized live Google probe/auth evidence remains
+true and separate. No Linux validation, host credentials, native/provider calls,
+real-repository commits/pushes, workflow deployment or install occurred this step;
+Git writes/refs were temporary fixtures only. This docs pass performs reads and
+`apply_patch` only, no shell/tests/native calls; prior uncommitted work is preserved.
+
+**Next critical code gates:** production GitHub HTTPS Git credential delivery
+keeping secrets out of URL/argv/config/logs with process isolation; reviewed
+inception/independently trusted root pin and quiescent local-to-hosted handoff;
+production coordinator construction and hosted writer wiring with auth pause and
+recovery. No production credential helper/constructor or hosted writer command
+exists. Pinned workflow/secrets, cost hard stop, Linux validation and explicit
+activation follow those bridges; the remaining work is not deployment alone.
+No new workflow files.
+
+## Tasks hosted read-only foundation checkpoint: 2026-11-04
+
+Historical foundation scope below is retained. The subsequent
+[remote-authority checkpoint](#tasks-remote-authority-checkpoint-2026-11-04) adds
+read-only current-main verification and test-only coordination, not hosted writes.
+
+**Implemented and reviewed; usable checks/planning, not automatic notes-main
+publishing or activation.** Default `tasks hosted check/plan` shares pinned committed
+source and first-due policy, accepts consistent (spoofable) push claims and an
+independently trusted binding, then uses an immutable injected native-V1 TasksWrite
+record. Check has no HTTP/native calls and validates structure, not grant validity.
+Plan performs one refresh, fresh UserInfo and exact task GET only. The exact private
+parser copy is pinned before source-content reads/execution; later HEAD/path-pin
+checks around auth stop changed source before GET. No hosted apply, PATCH, state
+commit, native fallback, adoption, observation input, dynamic endpoint or credential
+export exists. Summaries remain redacted/unsigned; push/current-main/GitHub/publication/
+conditional-write/Hive-write/hosted-execution proof flags are false. See the
+[complete contract](tasks-hosted-foundation.md).
+
+Immutable storage locks one process-local store instance only; all saves return
+`CredentialPersistenceRequired`. Omitted/identical refresh tokens work; different
+rotation fails before UserInfo/token release/GET as `auth_action_required`, with
+the old secret potentially spent and manual separately authorized provisioning
+required. No secrets API/runtime secret update is implemented. State Git never
+contains credentials. A zeroized new environment copy does not remove the original
+runner environment. Claims admission is not GitHub authentication/current remote
+main verification, and input isolation is not an OS sandbox.
+
+### Final targeted validation and remaining limits
+
+Independent runs already reported, **not run by this docs pass**:
+
+- Full auth **78 passed**, including **7 immutable-backend tests**.
+- Shared source filter **31 passed / 2 ignored**, including process tests.
+- Hosted unit **12 passed**.
+- Default hosted CLI **2**, publisher CLI **2**, probe-exclusion **1 passed**.
+- Final independent task-crate default-parallel run **57 passed** (45 prior + 12
+  hosted) in **128.83s**. Default Tasks/hosted/publisher/probe-exclusion integration
+  suites **27 passed / 1 ignored**; feature Tasks/probe unit tests **41 passed**;
+  feature hosted/probe/publisher CLI **6 passed**.
+- Reviewer P1 parser-pin issue fixed; static read-only re-review found no remaining
+  P1/P2. Review is not test execution or production approval.
+- Final independent strict auth/Tasks/Calendar Clippy passed. CLI uses only existing
+  `too_many_arguments` / `needless_lifetimes` allowances; no `collapsible_if`
+  allowance needed. Formatting and diff checks also passed.
+
+These are completed targeted passes, not a full-workspace or long-run stability
+claim. The earlier publisher 45-test pass and intermittent failures/timeouts below
+retain their historical scope; causes remain unexplained. Calendar whole-workspace issues were not fixed;
+no full-workspace or Linux validation claim is made. Only synthetic/loopback fixtures
+were exercised for this foundation, not live Google authentication/provider proof.
+
+Next: trusted current remote-main verification; shared remote Git expected-OID CAS,
+dispatch ownership/local-to-hosted handoff; durable intent/outcome/ACK recovery with
+credential pauses; pinned trusted workflow, effective cost hard stop and explicit
+activation; later Linux runtime validation before deployment. No workflow added now.
+No live native credentials/client files, GitHub/provider calls, secret uploads,
+user-note edits, workflow deployment, install, commit or push occurred this session.
+This docs-only pass uses reads and `apply_patch`; no commands/tests/native calls.
+Prior uncommitted local publisher/probe/live-proof documentation and history remain
+in place; the Nov 4 checkpoint date is retained.
+
+## Tasks local publisher checkpoint: 2026-11-04
+
+**Implemented and reviewed, with validation limits; not ready for live activation.**
+Real local single-target first-due publisher is enabled by default in built-debug
+`tasks publish init/inspect/prepare/apply/recover`, not installed. This is separate
+from both the fake-only executor and opt-in disposable conditional probe. See the
+[runbook, exact flags, side effects and guarantees](tasks-local-publisher.md).
+
+Separate dedicated bare Git at fixed `refs/heads/hive-tasks-publisher-state` retains
+frozen semantic intent and evidence; an external installation binding pins canonical
+source/state/MW/connection/hash/origin. Local-main/source/parser/handoff replay and
+fresh TasksWrite account/same-bearer exact GET precede reviewed Prepared/Attempting
+CAS and one strong-If-Match due-only PATCH. Validated PATCH resource is persisted
+before confirmation GET; Applied requires both plus durable ACK. Recovery never
+PATCHes or requires current source/parser. Desired due plus unchanged non-due fields
+means RecoveredSatisfied with UNKNOWN attribution, not Applied. Transient/invalid
+recovery observations stay Uncertain; actual semantic conflict blocks. Prepared
+admission reserves 256 KiB of the 1 MiB state for post-write evidence, without
+retroactively blocking Attempting/Uncertain recovery. Local locks/CAS and explicit
+fsync provide process-crash evidence, not distributed fencing, host/power-loss or
+exactly-once guarantees; source and state are not atomic.
+
+### Validation — latest targeted passes and remaining limits
+
+These are implementation/review reports, **not tests run by this docs pass**:
+
+- The final independent `RUST_BACKTRACE=1 cargo test --locked --offline -p hive-tasks -- --nocapture`
+  passed **45 tests** (24 publisher + 21 fake/storage) under the default parallel
+  runner in **133.39s**. This includes the previously observed failing near-limit
+  test. No production deadlines were relaxed.
+- Final independent default CLI suites passed **25 / 1 ignored**; feature-enabled
+  Tasks/probe unit tests passed **41**, and publisher/probe CLI suites passed **4**.
+  Focused task-crate strict Clippy, feature CLI Clippy with the existing allowances,
+  formatting and diff checks also passed.
+- Implementer serial full `hive-tasks`: **45 passed** (24 publisher + 21 fake).
+  Default CLI: **25 passed / 1 ignored** (Tasks 22 + publisher 2 + probe-exclusion 1);
+  feature publisher/probe CLI **4 passed**; Tasks/probe unit **41 passed**.
+- Auth **71 passed** and capture **69 passed / 2 ignored** were reported during
+  initial implementation **before the latest two P2 fixes**; no rerun now is claimed.
+- Review found two P2 issues (transient recovery and evidence capacity), fixed;
+  targeted re-review found no P1/P2. That is not final test-suite green evidence.
+- Initial four-thread `hive-tasks` run reported **two fake-test failures**
+  (`executor` recovery-conflicts and crash-boundaries), then outer timeout **300s**.
+  Parallel CLI timed out at **180s** with no failed lines. High load was observed;
+  causality is **unconfirmed**, not established as host-load root cause.
+- Coordinator's independent serial publisher run (outer **240s**) reported FAILED
+  near `near_limit_applied...` before timing out; no panic was captured then. The
+  target did not reproduce in **11 isolated + 4 concurrent + 3 test-sequence** runs.
+  Byte-count fixture optimization and diagnostics are not a proven fix for that
+  original failure. Three affected near-limit tests subsequently passed in **10s**;
+  no production deadlines were relaxed. Latest changes were diagnostics/fixtures
+  only in `publisher_tests.rs`.
+- Strict new-crate Clippy and CLI Clippy with existing `too_many_arguments` /
+  `needless_lifetimes` allowances, fmt and diff checks passed. Full workspace was
+  **not rerun**; the earlier Calendar issue remains unresolved.
+
+The latest default-parallel full task-crate run is green, but **one passing rerun
+does not establish parallel stability or explain the earlier failures/timeouts**.
+Their causes remain unconfirmed. This is not a full-workspace pass or authorization
+for live publisher activation.
+
+No live publisher init/prepare/apply/recover, native credential/provider operation,
+real publisher installation, user handoff export, canonical-note edit, workflow,
+main push, commit or install/activation occurred this implementation step. Existing
+production credentials configured earlier persist; no new login is required by
+this documentation. The earlier separately authorized disposable live proof below
+remains true, including its saved grant and Nov 6 outcome. Its approval covered the
+disposable task only, not a canonical real-task apply or a known canonical date.
+
+**Next:** investigate the earlier intermittent failures while progressing hosted credential backend/routing,
+source-main authorization, remote Git CAS/ownership coordinator and authoritative
+ACK recovery, followed by workflow cost hard stop and later Linux validation.
+Manual local pilot and canonical real-task write need separate explicit approval;
+no examples are to be run now. Inbound worker/queue/baseline/receipts and historical
+probe/liveproof documentation are retained. This docs-only pass uses reads and
+`apply_patch`, with no shell commands, tests or native/live operations.
+
+## Live Tasks conditional proof: 2026-11-04
+
+**Limited live provider evidence succeeded after explicit user authorizations;
+not production writeback or hosted activation.** The user nominated the disposable
+`Hive conditional write test` in `My Tasks`, described as due tomorrow; the API
+confirmed **2026-11-05**. The user explicitly approved browser sign-in for
+`tasks-write-personal` and subsequently authorized changing dates for testing.
+Login saved a separate `tasks` + `openid` profile. Existing readonly `personal`
+list access succeeded after login and again after the test; local profile isolation
+still does not prove independent Google-side grant lifecycles.
+
+- `inspect-01` made only a Tasks GET, no PATCH, and stopped on normal output-only
+  `links: []`. The compatibility fix to shared `validate_open_task` accepts **only
+  empty links arrays**; malformed/nonempty links and unknown fields still refuse.
+  The probe fixture now includes `links: []`.
+- `inspect-02` succeeded. In `run-01`, fresh auth preceded baseline GET **200**;
+  current-ETag due-only PATCH **Nov 5 → Nov 6 returned 200**. Changed GET **200**
+  confirmed a new ETag. Stale-old-ETag due-only PATCH back to Nov 5 returned **412
+  with valid Google error JSON**. Final GET **200** retained Nov 6, the same new
+  ETag and unchanged non-due fields.
+- A distinct read-only `verify-01` independently confirmed Nov 6 and the same new
+  ETag. **Two PATCHes attempted, one accepted**; no automatic replay, rollback or
+  delete. The disposable task remains open, due **2026-11-06**. The real
+  `Verify scheduled phone capture` task and canonical notes were not edited.
+
+Raw IDs, ETags, digests and journal contents remain private. Local evidence paths:
+`~/Library/Application Support/Hive/tasks-conditional-probe-20261104/{inspect-01,inspect-02,run-01,verify-01}.jsonl`.
+These unsigned journal audits are not a production canonical ACK. This is evidence
+for one target/session, not a universal provider guarantee; production must retain
+the same narrow requests and conditional checks. The feature remains opt-in,
+built-debug and **not installed**; fake execution remains fake-only.
+
+### Supplied post-compatibility-fix validation
+
+Independently run after the fix, not by this documentation pass: capture **69
+passed / 2 ignored**; the new regression alone **1 passed** (included in capture,
+not extra coverage); probe unit **36 passed**; Tasks integration **22 passed / 1
+ignored**; probe CLI **2 passed**. Strict capture Clippy and feature CLI Clippy
+passed, the latter with existing `too_many_arguments` / `needless_lifetimes`
+allowances; formatting and diff checks passed. **Full workspace not rerun**; the
+earlier Calendar issue remains unresolved. Auth **71 passed** belongs to the prior
+feature milestone, not a live-session rerun.
+
+Capture worker/queue/baseline, canonical notes, source refs and workflows were not
+changed by the probe work; the new credential profile was intentionally saved.
+No code commits, pushes or installation were performed. This documentation pass
+uses only reads and patches, with no commands or live operations.
+
+**Next:** scoped production due-only adapter plus durable intent/outcome recovery,
+Git-backed state and hosted credential/auth ownership coordination, then the
+notes-`main` push workflow with existing cost/Linux/activation gates. The If-Match
+gate now has limited live evidence, not zero evidence; the probe alone does not
+make automatic notes writeback ready. Calendar remains deferred. See the
+[runbook](tasks-conditional-probe.md) and [staged plan](google-tasks-writeback.md#staged-activation-plan).
+Earlier checkpoints below retain their historical scope, including no-live claims
+that were true before this separately authorized session.
+
+## Tasks conditional-probe checkpoint: 2026-11-04
+
+**Separate nondefault experiment code/review complete; NO live validation.** Feature
+`tasks-conditional-probe` exposes disposable-task `inspect/run`; default builds
+exclude command and adapter. This is not a production adapter or hosted workflow,
+and the fake executor below remains fake-only. See the [runbook, official source
+references and separate approval gates](tasks-conditional-probe.md).
+
+The experiment binds a fresh saved TasksWrite refresh/UserInfo and same-bearer exact
+GET to an approved already-dated disposable target/baseline. Current-E0 due-only
+PATCH D1, GET confirming new E1, then stale-E0 PATCH D0 requires valid Google JSON
+412 and final GET retaining D1/E1/non-due fields. Every stale 2xx fails, even if
+unchanged. Maximum two PATCHes, no retry/rollback/restore; success leaves D1, ignored
+preconditions can return D0. Exclusive private synced journal records each OAuth/
+GET/PATCH attempt/outcome; missing outcome is UNKNOWN, never replay. Its
+`resultCandidate` is not publication. Process-crash evidence only, no power-loss
+guarantee. The 120-second admission/network budget does not hard-bound Keychain UI
+or filesystem sync; post-sync checks and reduced Tasks/OAuth request budgets apply.
+Additive `GoogleOAuth::with_request_timeout` cannot extend an existing clone's
+deadline and leaves ordinary transport behavior unchanged.
+
+### Supplied final targeted validation
+
+Actually executed during implementation/independent review, **not by this docs pass**:
+
+- Independent final feature unit invocation:
+  `cargo test --locked --offline -p hive --features tasks-conditional-probe --bin hive tasks::`
+  — **41 passed: 36 probe + 5 existing**.
+- Feature integration: Tasks **22 passed / 1 ignored**, `tasks_conditional_probe`
+  **2 passed** — combined **24 passed / 1 ignored**. Full auth suite **71 passed**.
+- Reviewer separately passed **36 probe**, **2 feature CLI**, **1 default-exclusion**
+  and **12 auth Google** tests. These overlap the suites above, not extra distinct
+  coverage. No P1/P2 remained after malformed-412 and deadline fixes.
+- Independent final default-build verification also passed: Tasks unit **5 passed**,
+  Tasks integration **22 passed / 1 ignored**, and default probe-exclusion **1 passed**.
+  Feature and default builds were tested sequentially to avoid shared-binary races;
+  each suite used its default test runner. Implementer also reported fake crate
+  **21 passed**; that crate was not independently rerun in this checkpoint.
+- Strict Clippy passed with only existing CLI `too_many_arguments` /
+  `needless_lifetimes` allowances; the probe command is boxed and no
+  `large_enum_variant` exemption remains. Formatting, focused auth/feature Clippy
+  and diff checks were independently rerun after the documentation update.
+  No fully strict workspace Clippy claim.
+- **Full workspace NOT rerun.** Historical unresolved Calendar failures below are
+  neither fixed nor newly attributed by this checkpoint. Loopback/fake credentials
+  and temporary fixtures are not Google conditional-behavior proof. Official docs
+  are guidance, not empirical stale-precondition validation.
+
+No live probe, auth/profile/client file or task was selected or touched. In
+particular, `Verify scheduled phone capture` is not used. Installed binaries,
+worker, credentials, client files, notes, queues, workflows, commits and pushes
+were unchanged; implementation fixture files were temporary only. This docs pass
+uses source reads and documentation patches only: no shell/native calls, tests,
+builds or live operations. Earlier checkpoints below are preserved as historical
+records. Production/hosted writeback remains disabled; live inspect and both exact
+target/date mutations need separate approval before any experiment.
+
 ## Tasks first-due fake-executor checkpoint: 2026-11-04
 
 **New fake-only executor milestone complete after review; not production or

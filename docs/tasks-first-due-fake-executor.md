@@ -136,12 +136,18 @@ input isolation is not an OS sandbox for hostile binaries.
   --operation-id RETAINED_OPERATION_ID
 ```
 
-**Next gate:** separately authorize a disposable-resource live test of actual
-Google Tasks conditional PATCH behavior, including proof that stale preconditions
-are rejected rather than ignored. Neither fake revisions nor Calendar etags prove
-this. Only then proceed to a scoped production adapter, durable intent/ACK
-coordination, hosted secrets/state and the notes-`main` push workflow. No new
-workflow or live-write CLI is delivered or activated now.
+**Next gate:** the separate nondefault [conditional-probe experiment](tasks-conditional-probe.md)
+now has limited live single-target/session evidence after explicit approvals:
+current-ETag due-only PATCH accepted, stale-old-ETag PATCH rejected with valid Google
+JSON 412, and final/independent GETs retained the changed date/new ETag. This does
+not promote synthetic results or establish universal guarantees. This executor
+remains fake-only; the probe is not its production adapter. A separate default-enabled
+[real local publisher](tasks-local-publisher.md) now implements due-only dispatch,
+durable Git intent/ACK and frozen GET-only recovery, **with validation limits, not
+live activation**. Next are hosted credential backend/routing, source-main
+authorization, remote Git CAS/ownership coordination, workflow cost/Linux gates and
+separate canonical-task pilot approval. Hosted writeback remains disabled. See the
+[new live checkpoint](release.md#live-tasks-conditional-proof-2026-11-04).
 
 ## Related files
 

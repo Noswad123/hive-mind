@@ -74,6 +74,15 @@ pub fn validate_open_task(task: &GoogleTask) -> Result<()> {
         "unsupported task shape"
     );
     for (key, value) in &task.extra {
+        // Google emits this output-only collection even for a plain task. An
+        // empty list carries no links; nonempty or malformed links still require review.
+        if key == "links" {
+            ensure!(
+                value.as_array().is_some_and(Vec::is_empty),
+                "linked Google tasks are unsupported"
+            );
+            continue;
+        }
         let value = value
             .as_str()
             .context("provider metadata must be a string")?;
@@ -292,4 +301,35 @@ pub fn export_handoff(
     };
     handoff.validate()?;
     Ok(handoff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn empty_output_only_links_are_supported_but_actual_links_require_review() {
+        let mut task = GoogleTask {
+            id: "fixture-task".into(),
+            title: "Plain fixture task".into(),
+            status: "needsAction".into(),
+            ..Default::default()
+        };
+        task.extra.insert("links".into(), json!([]));
+        assert!(validate_open_task(&task).is_ok());
+        for links in [
+            json!(null),
+            json!(""),
+            json!({}),
+            json!([{}]),
+            json!([{"type":"generic","link":"https://example.invalid"}]),
+        ] {
+            task.extra.insert("links".into(), links);
+            assert!(validate_open_task(&task).is_err());
+        }
+        task.extra.insert("links".into(), json!([]));
+        task.extra.insert("unknownCollection".into(), json!([]));
+        assert!(validate_open_task(&task).is_err());
+    }
 }

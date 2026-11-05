@@ -361,6 +361,32 @@ pub(crate) fn read_snapshot_before(
     mw_bin: &Path,
     deadline: Instant,
 ) -> Result<CommittedSnapshot> {
+    read_snapshot_with_pin(repo, commit, mw_bin, deadline, None)
+}
+
+pub(crate) fn read_snapshot_pinned(
+    repo: &Path,
+    commit: &str,
+    mw_bin: &Path,
+    expected_parser_sha256: &str,
+) -> Result<CommittedSnapshot> {
+    ensure!(hex(expected_parser_sha256, 64), "invalid MW executable pin");
+    read_snapshot_with_pin(
+        repo,
+        commit,
+        mw_bin,
+        Instant::now() + Duration::from_secs(60),
+        Some(expected_parser_sha256),
+    )
+}
+
+fn read_snapshot_with_pin(
+    repo: &Path,
+    commit: &str,
+    mw_bin: &Path,
+    deadline: Instant,
+    expected_parser_sha256: Option<&str>,
+) -> Result<CommittedSnapshot> {
     // Construct before any private workspace so handlers remain installed through
     // process-group cleanup and TempDir destruction on cancellation/error/success.
     let session = SourceSession::before(deadline)?;
@@ -392,6 +418,12 @@ pub(crate) fn read_snapshot_before(
         .map_err(|_| anyhow!("MW executable unavailable"))?;
     let sandbox = Sandbox::new()?;
     let (binary, parser_sha256) = sandbox.copy_parser(&mut executable, &session)?;
+    // The digest covers the exact private artifact, not a separately opened path.
+    // A mismatched copy must never execute or proceed to source-content reads.
+    ensure!(
+        expected_parser_sha256.is_none_or(|expected| expected == parser_sha256),
+        "MW executable pin mismatch"
+    );
     let version = sandbox.git(&repo, &["--version"], b"", &session, 1024)?;
     ensure!(supported_git(&version), "Git 2.50 or newer is required");
     sandbox.require_commit(&repo, commit, &session)?;
@@ -1531,6 +1563,60 @@ printf '{{"schemaVersion":"1","source":"saved-markdown","notesDir":"%s","dashboa
         assert!(
             read_json_blob_before(&fixture.repo, &first[..40], "ledger.json", deadline()).is_err()
         );
+    }
+
+    #[test]
+    fn pinned_reader_rejects_replaced_parser_before_execution_or_source_reads() {
+        let fixture = Fixture::new();
+        let commit = fixture.commit();
+        let pin = format!("{:x}", Sha256::digest(fs::read(&fixture.mw).unwrap()));
+        let unpinned = read_snapshot(&fixture.repo, &commit, &fixture.mw).unwrap();
+        let pinned = crate::task_snapshot::read_committed_tasks_pinned(
+            &fixture.repo,
+            &commit,
+            &fixture.mw,
+            &pin,
+        )
+        .unwrap();
+        assert_eq!(pinned.commit, unpinned.commit);
+        assert_eq!(pinned.parser_sha256, unpinned.parser_sha256);
+        assert_eq!(pinned.items.len(), unpinned.items.len());
+
+        let marker = fixture.root.join("parser-b-executed");
+        let replacement = fixture.root.join("replacement");
+        fs::write(
+            &replacement,
+            format!("#!/bin/sh\n: > '{}'\nexit 9\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::rename(&replacement, &fixture.mw).unwrap();
+        // Even an unavailable commit is not examined until the copied parser is trusted.
+        for oid in [&commit, &"0".repeat(40)] {
+            let error = crate::task_snapshot::read_committed_tasks_pinned(
+                &fixture.repo,
+                oid,
+                &fixture.mw,
+                &pin,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.to_string(), "MW executable pin mismatch");
+            assert!(!marker.exists());
+        }
+        for invalid in ["", "abc", &pin.to_uppercase()] {
+            assert_eq!(
+                read_snapshot_pinned(&fixture.repo, &commit, &fixture.mw, invalid)
+                    .err()
+                    .unwrap()
+                    .to_string(),
+                "invalid MW executable pin"
+            );
+        }
+        assert!(!marker.exists());
+        // Opt-in pinning does not change the old caller's execution semantics.
+        assert!(read_snapshot(&fixture.repo, &commit, &fixture.mw).is_err());
+        assert!(marker.exists());
     }
 
     #[test]
