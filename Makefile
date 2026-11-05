@@ -1,4 +1,4 @@
-.PHONY: help fmt check test validate build install pwa-check pwa-build docker-build clean
+.PHONY: help fmt check test validate build install pwa-check pwa-build docker-build clean linux-preflight
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
@@ -15,9 +15,13 @@ help:
 	@printf '%s\n' '  make pwa-check    Run Svelte/PWA checks through hive'
 	@printf '%s\n' '  make pwa-build    Build the PWA through hive'
 	@printf '%s\n' '  make docker-build Build local hive-sync-api image (requires Docker/compatible runtime)'
+	@printf '%s\n' '  make linux-preflight Check Linux development prerequisites without building or installing'
 
 fmt:
 	cargo fmt --all --check
+
+linux-preflight:
+	bash scripts/dev/linux-preflight.sh
 
 check:
 	cargo check --workspace

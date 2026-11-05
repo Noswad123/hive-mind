@@ -127,6 +127,12 @@ hive-mind/
 
 ## Build and install
 
+For the CachyOS development continuation, start with the
+[Linux setup and credential-free checks](docs/development-linux.md), not installation.
+The [development handoff](docs/development-handoff.md) records current evidence,
+remaining production code gates, and the boundary between retiring the Mac checkout
+and preserving its existing capture worker. Linux runtime validation is still pending.
+
 ```bash
 make validate
 make build
